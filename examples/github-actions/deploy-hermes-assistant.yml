@@ -1,0 +1,40 @@
+name: Deploy Hermes Assistant
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "assistant/assistant.yaml"
+      - ".github/workflows/deploy-hermes-assistant.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TFY_API_KEY: ${{ secrets.TFY_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install TrueFoundry CLI
+        run: python -m pip install --upgrade truefoundry
+
+      - name: Validate assistant config
+        run: npx -y github:truefoundry/tfy-hermes-agent#main validate assistant/assistant.yaml
+
+      - name: Render manifests
+        run: npx -y github:truefoundry/tfy-hermes-agent#main render assistant/assistant.yaml
+
+      - name: Deploy assistant
+        run: npx -y github:truefoundry/tfy-hermes-agent#main deploy assistant/assistant.yaml
+
+      - name: Smoke test assistant
+        run: npx -y github:truefoundry/tfy-hermes-agent#main test assistant/assistant.yaml

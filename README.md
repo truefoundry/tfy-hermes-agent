@@ -54,3 +54,13 @@ npx github:truefoundry/tfy-hermes-agent render assistant.yaml
 npx github:truefoundry/tfy-hermes-agent deploy assistant.yaml
 npx github:truefoundry/tfy-hermes-agent test assistant.yaml
 ```
+
+## GitHub Actions
+
+Copy `examples/github-actions/deploy-hermes-assistant.yml` into your project as:
+
+```text
+.github/workflows/deploy-hermes-assistant.yml
+```
+
+Add `TFY_API_KEY` as a GitHub Actions secret. The workflow deploys `assistant/assistant.yaml`.
