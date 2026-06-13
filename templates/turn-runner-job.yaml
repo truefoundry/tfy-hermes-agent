@@ -16,6 +16,7 @@ image:
     type: dockerfile
     dockerfile_path: Dockerfile.turn-runner
     build_context_path: .
+    command: node runner/turn-runner.mjs
 resources:
   cpu_request: 0.5
   cpu_limit: 2
