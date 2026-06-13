@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+rm -rf .rendered
 mkdir -p .rendered
 for file in manifests/*.yaml; do
   name="$(basename "$file")"

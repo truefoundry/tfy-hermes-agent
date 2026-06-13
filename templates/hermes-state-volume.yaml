@@ -1,7 +1,0 @@
-name: ${HERMES_VOLUME_NAME}
-type: volume
-workspace_fqn: ${TFY_WORKSPACE_FQN}
-config:
-  type: dynamic
-  size: ${HERMES_VOLUME_SIZE}
-  storage_class: ${HERMES_VOLUME_STORAGE_CLASS}

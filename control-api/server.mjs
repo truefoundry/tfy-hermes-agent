@@ -16,6 +16,8 @@ const DEFAULT_SKILLS = parseJsonArrayEnv("HERMES_DEFAULT_SKILLS");
 const DEFAULT_MCP_SERVERS = parseJsonArrayEnv("HERMES_DEFAULT_MCP_SERVERS");
 const DEFAULT_SECRET_REFS = parseJsonArrayEnv("HERMES_DEFAULT_SECRET_REFS");
 const SLACK_CONFIG = parseSlackConfig();
+const OPENAI_SYNC_TIMEOUT_MS = Number(process.env.HERMES_OPENAI_SYNC_TIMEOUT_MS || 120000);
+const OPENAI_POLL_INTERVAL_MS = Number(process.env.HERMES_OPENAI_POLL_INTERVAL_MS || 1000);
 
 const stateFile = path.join(STATE_ROOT, "state.json");
 const defaultAgentId = "agt_hermes";
@@ -111,6 +113,17 @@ function send(res, status, body) {
 function sendText(res, status, body, contentType = "text/plain") {
   res.writeHead(status, { "content-type": contentType });
   res.end(body);
+}
+
+function sendOpenAIError(res, status, message, type = "invalid_request_error", param = null, code = null) {
+  return send(res, status, {
+    error: {
+      message,
+      type,
+      param,
+      code
+    }
+  });
 }
 
 function requireTfySecretRefs(refs) {
@@ -239,21 +252,59 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function enqueueSessionMessage(sessionId, content, source = {}) {
+function createdUnix(run) {
+  const value = new Date(run?.createdAt || now()).getTime();
+  return Number.isNaN(value) ? Math.floor(Date.now() / 1000) : Math.floor(value / 1000);
+}
+
+function openAIId(prefix, runId) {
+  return `${prefix}_${String(runId).replace(/^run_/, "")}`;
+}
+
+function runIdFromOpenAIId(value) {
+  const idValue = String(value || "");
+  if (idValue.startsWith("resp_")) return `run_${idValue.slice(5)}`;
+  if (idValue.startsWith("chatcmpl_")) return `run_${idValue.slice(9)}`;
+  return idValue;
+}
+
+async function createRun({ agentId = defaultAgentId, userId = "default", sessionId = null, content, source = {}, openai = null }) {
   const state = await loadState();
-  const session = state.sessions[sessionId];
-  if (!session) throw new Error("session not found");
+  let session = sessionId ? state.sessions[sessionId] : null;
+  if (!session) {
+    sessionId = id("ses");
+    session = {
+      id: sessionId,
+      agentId,
+      userId,
+      messages: [],
+      createdAt: now(),
+      updatedAt: now()
+    };
+    state.sessions[sessionId] = session;
+  }
+
   const message = String(content || "");
-  session.messages.push({ role: "user", content: message, source, createdAt: now() });
+  const inputMessage = { id: id("msg"), role: "user", content: message, source, createdAt: now() };
+  session.messages.push(inputMessage);
   session.updatedAt = now();
   const runId = id("run");
+  const openAI = openai ? { ...openai } : null;
+  if (openAI?.kind === "response" && !openAI.responseId) {
+    openAI.responseId = openAIId("resp", runId);
+  }
+  if (openAI?.kind === "chat.completion" && !openAI.chatCompletionId) {
+    openAI.chatCompletionId = openAIId("chatcmpl", runId);
+  }
   state.runs[runId] = {
     id: runId,
     sessionId: session.id,
     agentId: session.agentId,
     status: "queued",
     content: message,
+    inputMessageId: inputMessage.id,
     source,
+    openai: openAI,
     createdAt: now(),
     updatedAt: now()
   };
@@ -270,14 +321,20 @@ async function enqueueSessionMessage(sessionId, content, source = {}) {
   return { id: runId, status: trigger ? "running" : "queued", trigger };
 }
 
-async function waitForRun(runId, timeoutMs = Number(process.env.SLACK_RUN_TIMEOUT_SECONDS || 240) * 1000) {
+async function enqueueSessionMessage(sessionId, content, source = {}) {
+  const state = await loadState();
+  if (!state.sessions[sessionId]) throw new Error("session not found");
+  return createRun({ sessionId, content, source });
+}
+
+async function waitForRun(runId, timeoutMs = Number(process.env.SLACK_RUN_TIMEOUT_SECONDS || 240) * 1000, pollIntervalMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const state = await loadState();
     const run = state.runs[runId];
     if (!run) throw new Error(`run not found: ${runId}`);
     if (["completed", "failed"].includes(run.status)) return { run };
-    await sleep(2000);
+    await sleep(pollIntervalMs);
   }
   return {
     run: {
@@ -288,10 +345,126 @@ async function waitForRun(runId, timeoutMs = Number(process.env.SLACK_RUN_TIMEOU
   };
 }
 
-function sessionMemory(session) {
+function sessionMemory(session, excludeMessageId = null) {
   return (session.messages || [])
+    .filter((message) => !excludeMessageId || message.id !== excludeMessageId)
     .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
     .join("\n\n");
+}
+
+function textFromContent(content) {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      if (["text", "input_text", "output_text"].includes(part.type) && typeof part.text === "string") {
+        return part.text;
+      }
+      if (part.type === "image_url" || part.type === "input_image" || part.type === "input_file") {
+        throw new Error(`unsupported non-text content part: ${part.type}`);
+      }
+      if (typeof part.text === "string" && !part.type) return part.text;
+      throw new Error(`unsupported non-text content part: ${part.type || "unknown"}`);
+    }).filter(Boolean).join("\n");
+  }
+  if (typeof content === "object" && typeof content.text === "string") return content.text;
+  throw new Error("unsupported non-text content");
+}
+
+function promptFromMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) {
+    throw new Error("messages must be a non-empty array");
+  }
+  return messages.map((message) => {
+    if (!message || typeof message !== "object") throw new Error("messages must contain objects");
+    const role = String(message.role || "user").toUpperCase();
+    return `${role}: ${textFromContent(message.content)}`;
+  }).join("\n\n");
+}
+
+function promptFromResponseInput(input) {
+  if (typeof input === "string") return input;
+  if (!Array.isArray(input) || !input.length) {
+    throw new Error("input must be a non-empty string or array");
+  }
+  return input.map((item) => {
+    if (typeof item === "string") return `USER: ${item}`;
+    if (!item || typeof item !== "object") return "";
+    const role = String(item.role || (item.type === "message" ? "assistant" : "user")).toUpperCase();
+    return `${role}: ${textFromContent(item.content ?? item.text)}`;
+  }).filter(Boolean).join("\n\n");
+}
+
+function responsePrompt(body) {
+  const parts = [];
+  if (typeof body.instructions === "string" && body.instructions.trim()) {
+    parts.push(`INSTRUCTIONS:\n${body.instructions.trim()}`);
+  }
+  parts.push(promptFromResponseInput(body.input));
+  return parts.join("\n\n");
+}
+
+function responseStatus(run) {
+  if (run.status === "completed") return "completed";
+  if (run.status === "failed") return "failed";
+  return "in_progress";
+}
+
+function responseObject(run) {
+  const responseId = run.openai?.responseId || openAIId("resp", run.id);
+  const model = run.openai?.model || HERMES_MODEL;
+  const completed = run.status === "completed";
+  const failed = run.status === "failed";
+  const outputText = completed ? String(run.result || "") : "";
+  return {
+    id: responseId,
+    object: "response",
+    created_at: createdUnix(run),
+    status: responseStatus(run),
+    error: failed ? { message: run.error || "Hermes run failed", type: "server_error" } : null,
+    incomplete_details: null,
+    instructions: run.openai?.instructions || null,
+    model,
+    output: completed ? [{
+      id: openAIId("msg", run.id),
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{
+        type: "output_text",
+        text: outputText,
+        annotations: []
+      }]
+    }] : [],
+    output_text: outputText,
+    usage: null,
+    metadata: run.openai?.metadata || {}
+  };
+}
+
+function chatCompletionObject(run) {
+  const completionId = run.openai?.chatCompletionId || openAIId("chatcmpl", run.id);
+  const model = run.openai?.model || HERMES_MODEL;
+  return {
+    id: completionId,
+    object: "chat.completion",
+    created: createdUnix(run),
+    model,
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: run.status === "completed" ? String(run.result || "") : "",
+        refusal: null,
+        annotations: []
+      },
+      logprobs: null,
+      finish_reason: run.status === "completed" ? "stop" : null
+    }],
+    usage: null
+  };
 }
 
 const slackBridge = createSlackBridge({
@@ -318,6 +491,94 @@ async function handle(req, res) {
   try {
     if (req.method === "GET" && url.pathname === "/api/health") {
       return send(res, 200, { ok: true, stateRoot: STATE_ROOT });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/models") {
+      return send(res, 200, { object: "list", data: [{ id: HERMES_MODEL, object: "model" }] });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/responses") {
+      const body = await json(req);
+      if (body.stream) {
+        return sendOpenAIError(res, 400, "streaming is not supported by this Hermes OpenAI-compatible adapter yet", "invalid_request_error", "stream");
+      }
+      let content;
+      try {
+        content = responsePrompt(body);
+      } catch (error) {
+        return sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      const previousRun = body.previous_response_id ? state.runs[runIdFromOpenAIId(body.previous_response_id)] : null;
+      const run = await createRun({
+        agentId: body.agent || defaultAgentId,
+        userId: body.user || "openai-sdk",
+        sessionId: previousRun?.sessionId || null,
+        content,
+        source: { type: "openai.responses" },
+        openai: {
+          kind: "response",
+          model: body.model || HERMES_MODEL,
+          instructions: body.instructions || null,
+          metadata: body.metadata || {}
+        }
+      });
+      if (body.background) return send(res, 200, responseObject(run));
+
+      const waited = await waitForRun(run.id, OPENAI_SYNC_TIMEOUT_MS, OPENAI_POLL_INTERVAL_MS);
+      if (!waited.run) return sendOpenAIError(res, 404, "response not found", "invalid_request_error");
+      if (waited.run.status === "failed") {
+        return sendOpenAIError(res, 500, waited.run.error || "Hermes run failed", "server_error");
+      }
+      if (waited.run.status !== "completed") {
+        return sendOpenAIError(res, 504, "Hermes run did not complete before the synchronous OpenAI adapter timeout", "server_error");
+      }
+      return send(res, 200, responseObject(waited.run));
+    }
+
+    const responseMatch = url.pathname.match(/^\/v1\/responses\/([^/]+)$/);
+    if (responseMatch && req.method === "GET") {
+      const run = state.runs[runIdFromOpenAIId(responseMatch[1])];
+      return run ? send(res, 200, responseObject(run)) : sendOpenAIError(res, 404, "response not found", "invalid_request_error");
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      const body = await json(req);
+      if (body.stream) {
+        return sendOpenAIError(res, 400, "streaming is not supported by this Hermes OpenAI-compatible adapter yet", "invalid_request_error", "stream");
+      }
+      let content;
+      try {
+        content = promptFromMessages(body.messages);
+      } catch (error) {
+        return sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
+      }
+      const run = await createRun({
+        agentId: body.agent || defaultAgentId,
+        userId: body.user || "openai-sdk",
+        content,
+        source: { type: "openai.chat.completions" },
+        openai: {
+          kind: "chat.completion",
+          model: body.model || HERMES_MODEL,
+          metadata: body.metadata || {}
+        }
+      });
+
+      const waited = await waitForRun(run.id, OPENAI_SYNC_TIMEOUT_MS, OPENAI_POLL_INTERVAL_MS);
+      if (!waited.run) return sendOpenAIError(res, 404, "chat completion not found", "invalid_request_error");
+      if (waited.run.status === "failed") {
+        return sendOpenAIError(res, 500, waited.run.error || "Hermes run failed", "server_error");
+      }
+      if (waited.run.status !== "completed") {
+        return sendOpenAIError(res, 504, "Hermes run did not complete before the synchronous OpenAI adapter timeout", "server_error");
+      }
+      return send(res, 200, chatCompletionObject(waited.run));
+    }
+
+    const chatCompletionMatch = url.pathname.match(/^\/v1\/chat\/completions\/([^/]+)$/);
+    if (chatCompletionMatch && req.method === "GET") {
+      const run = state.runs[runIdFromOpenAIId(chatCompletionMatch[1])];
+      return run ? send(res, 200, chatCompletionObject(run)) : sendOpenAIError(res, 404, "chat completion not found", "invalid_request_error");
     }
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
@@ -395,7 +656,7 @@ async function handle(req, res) {
       if (!run) return send(res, 404, { error: "run not found" });
       const agent = state.agents[run.agentId];
       const session = state.sessions[run.sessionId];
-      return send(res, 200, { run, agent, session, content: run.content, memory: sessionMemory(session) });
+      return send(res, 200, { run, agent, session, content: run.content, memory: sessionMemory(session, run.inputMessageId) });
     }
 
     const completeMatch = url.pathname.match(/^\/api\/internal\/runs\/([^/]+)\/complete$/);
@@ -423,7 +684,18 @@ async function handle(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/") {
-      return sendText(res, 200, "Hermes Agent control API\n", "text/plain");
+      return send(res, 200, {
+        name: "Hermes Agent API",
+        defaultApi: "openai-compatible",
+        endpoints: {
+          models: "/v1/models",
+          responses: "/v1/responses",
+          chatCompletions: "/v1/chat/completions",
+          health: "/api/health",
+          slackStatus: "/api/slack/status",
+          slackEvents: "/slack/events"
+        }
+      });
     }
 
     return send(res, 404, { error: "Not found." });

@@ -4,7 +4,6 @@ tfy_base_url: https://tfy.example.com
 
 hosts:
   control_api: hermes-control.example.com
-  hermes_api: hermes-api.example.com
 
 model: openai-main/gpt-5.5
 

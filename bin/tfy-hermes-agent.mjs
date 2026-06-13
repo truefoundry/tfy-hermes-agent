@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -266,7 +266,6 @@ function renderVars(config) {
     TFY_SECRET_TENANT: tenant,
     TFY_BASE_URL: config.tfy_base_url.replace(/\/+$/, ""),
     CONTROL_API_HOST: config.hosts.control_api,
-    HERMES_API_HOST: config.hosts.hermes_api || config.hosts.control_api.replace(/^([^.]+)/, "$1-hermes-api"),
     HERMES_REPO_URL: config.repo_url || "https://github.com/truefoundry/tfy-hermes-agent",
     HERMES_SOURCE_BRANCH: config.source_branch || "main",
     HERMES_SOURCE_REF: config.source_ref || "main",
@@ -275,13 +274,9 @@ function renderVars(config) {
     GATEWAY_API_KEY_REF: config.secrets.gateway_api_key,
     CONTROL_API_NAME: config.control_api_name || "harness-control-api",
     TURN_RUNNER_NAME: config.turn_runner_name || "hermes-turn-runner",
-    HERMES_API_NAME: config.hermes_api_name || "hermes-api",
     CONTROL_VOLUME_NAME: config.control_volume || "hermes-control-state",
-    HERMES_VOLUME_NAME: config.hermes_volume || "hermes-state",
     CONTROL_VOLUME_SIZE: config.control_volume_size || 10,
     CONTROL_VOLUME_STORAGE_CLASS: config.control_volume_storage_class || "managed-csi-premium",
-    HERMES_VOLUME_SIZE: config.hermes_volume_size || 20,
-    HERMES_VOLUME_STORAGE_CLASS: config.hermes_volume_storage_class || "azurefile",
     HERMES_SKILLS_REGISTRY_URL: config.skills_registry_url || "",
     HERMES_DEFAULT_SKILLS: JSON.stringify(config.skills || []),
     HERMES_DEFAULT_MCP_SERVERS: JSON.stringify(config.mcp_servers || []),
@@ -308,13 +303,12 @@ function replaceVars(input, vars) {
 
 async function render(config) {
   const outputDir = path.join(path.dirname(configPath), ".rendered");
+  await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
   const vars = renderVars(config);
   const names = [
     "control-volume.yaml",
-    "hermes-state-volume.yaml",
     "turn-runner-job.yaml",
-    "hermes-api-service.yaml",
     "control-api-service.yaml"
   ];
   for (const name of names) {
@@ -342,9 +336,7 @@ async function deploy(config) {
   };
   for (const name of [
     "control-volume.yaml",
-    "hermes-state-volume.yaml",
     "turn-runner-job.yaml",
-    "hermes-api-service.yaml",
     "control-api-service.yaml"
   ]) {
     run("tfy", ["deploy", "-f", path.join(outputDir, name), "--no-wait"], { env: tfyEnv });

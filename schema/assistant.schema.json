@@ -14,12 +14,8 @@
     "control_volume": { "type": "string" },
     "control_volume_size": { "type": "integer", "minimum": 1 },
     "control_volume_storage_class": { "type": "string" },
-    "hermes_volume": { "type": "string" },
-    "hermes_volume_size": { "type": "integer", "minimum": 1 },
-    "hermes_volume_storage_class": { "type": "string" },
     "control_api_name": { "type": "string" },
     "turn_runner_name": { "type": "string" },
-    "hermes_api_name": { "type": "string" },
     "model": { "type": "string", "minLength": 1 },
     "skills_registry_url": { "type": "string" },
     "hosts": {
@@ -27,8 +23,7 @@
       "required": ["control_api"],
       "additionalProperties": false,
       "properties": {
-        "control_api": { "type": "string", "minLength": 1 },
-        "hermes_api": { "type": "string" }
+        "control_api": { "type": "string", "minLength": 1 }
       }
     },
     "secrets": {

@@ -15,7 +15,7 @@ Before writing `assistant.yaml`, you need:
 - TrueFoundry host, for example `https://tfy.example.com`
 - TrueFoundry workspace FQN, for example `cluster:workspace`
 - TrueFoundry credentials available locally or in CI
-- public hostnames for the Hermes control API and optional Hermes API
+- a public hostname for the Hermes API/control service
 - a TrueFoundry SecretGroup for gateway credentials
 - only `tfy-secret://...` refs in config; no raw secrets
 - MCP Gateway URLs for servers visible with your token
@@ -32,7 +32,6 @@ tfy_base_url: https://tfy.example.com
 
 hosts:
   control_api: hermes-control.example.com
-  hermes_api: hermes-api.example.com
 
 model: openai-main/gpt-5.5
 
@@ -64,6 +63,21 @@ slack:
 ```
 
 Slack request URL: `https://<control_api_host>/slack/events`.
+
+OpenAI-compatible API base URL: `https://<control_api_host>/v1`.
+
+Supported OpenAI-style endpoints:
+
+- `GET /v1/models`
+- `POST /v1/responses`
+- `GET /v1/responses/:id`
+- `POST /v1/chat/completions`
+- `GET /v1/chat/completions/:id`
+
+The adapter supports text-only, non-streaming calls. `stream: true` returns an
+OpenAI-style error response because Hermes turns currently run as background
+jobs that return final stdout. Use `background: true` with `POST /v1/responses`
+to create an async run and poll `GET /v1/responses/:id`.
 
 ## Commands
 
