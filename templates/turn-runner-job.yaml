@@ -10,7 +10,7 @@ image:
   build_source:
     type: git
     repo_url: ${HERMES_REPO_URL}
-    branch_name: main
+    branch_name: ${HERMES_SOURCE_BRANCH}
     ref: ${HERMES_SOURCE_REF}
   build_spec:
     type: dockerfile

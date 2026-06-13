@@ -9,6 +9,7 @@
     "workspace_fqn": { "type": "string", "minLength": 3 },
     "tfy_base_url": { "type": "string", "minLength": 8 },
     "repo_url": { "type": "string" },
+    "source_branch": { "type": "string" },
     "source_ref": { "type": "string" },
     "control_volume": { "type": "string" },
     "control_volume_size": { "type": "integer", "minimum": 1 },

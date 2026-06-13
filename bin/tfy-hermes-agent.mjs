@@ -208,6 +208,7 @@ function renderVars(config) {
     CONTROL_API_HOST: config.hosts.control_api,
     HERMES_API_HOST: config.hosts.hermes_api || config.hosts.control_api.replace(/^([^.]+)/, "$1-hermes-api"),
     HERMES_REPO_URL: config.repo_url || "https://github.com/truefoundry/tfy-hermes-agent",
+    HERMES_SOURCE_BRANCH: config.source_branch || "main",
     HERMES_SOURCE_REF: config.source_ref || "main",
     HERMES_MODEL: config.model,
     GATEWAY_BASE_URL_REF: config.secrets.gateway_base_url,
