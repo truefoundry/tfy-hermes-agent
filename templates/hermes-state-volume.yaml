@@ -1,0 +1,5 @@
+name: ${HERMES_VOLUME_NAME}
+type: volume
+workspace_fqn: ${TFY_WORKSPACE_FQN}
+size: "20Gi"
+access_mode: ReadWriteOnce

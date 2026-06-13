@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrueFoundry Hermes assistant config",
+  "type": "object",
+  "required": ["name", "workspace_fqn", "tfy_base_url", "hosts", "model", "secrets"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "workspace_fqn": { "type": "string", "minLength": 3 },
+    "tfy_base_url": { "type": "string", "minLength": 8 },
+    "repo_url": { "type": "string" },
+    "source_ref": { "type": "string" },
+    "control_volume": { "type": "string" },
+    "hermes_volume": { "type": "string" },
+    "control_api_name": { "type": "string" },
+    "turn_runner_name": { "type": "string" },
+    "hermes_api_name": { "type": "string" },
+    "model": { "type": "string", "minLength": 1 },
+    "skills_registry_url": { "type": "string" },
+    "hosts": {
+      "type": "object",
+      "required": ["control_api"],
+      "additionalProperties": false,
+      "properties": {
+        "control_api": { "type": "string", "minLength": 1 },
+        "hermes_api": { "type": "string" }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["gateway_base_url", "gateway_api_key"],
+      "additionalProperties": false,
+      "properties": {
+        "gateway_base_url": { "type": "string", "pattern": "^tfy-secret://" },
+        "gateway_api_key": { "type": "string", "pattern": "^tfy-secret://" }
+      }
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "skills": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_1_turns": { "type": "integer", "minimum": 1 },
+        "session_2_turns": { "type": "integer", "minimum": 1 },
+        "verify_isolation": { "type": "boolean" }
+      }
+    }
+  }
+}
