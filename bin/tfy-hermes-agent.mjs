@@ -5,7 +5,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import YAML from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const command = process.argv[2];
@@ -28,11 +27,82 @@ function fail(message) {
 async function readConfig() {
   if (!existsSync(configPath)) fail(`config not found: ${configPath}`);
   const raw = await readFile(configPath, "utf8");
-  const config = YAML.parse(raw);
+  const config = parseAssistantYaml(raw);
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     fail("assistant config must be a YAML object");
   }
   return config;
+}
+
+function parseAssistantYaml(raw) {
+  const result = {};
+  const lines = raw.split(/\r?\n/);
+  let currentKey = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    const original = lines[i];
+    if (!original.trim() || original.trim().startsWith("#")) continue;
+    const indent = original.match(/^ */)[0].length;
+    const line = stripComment(original.trim());
+    if (!line) continue;
+
+    if (indent === 0) {
+      const [key, value] = splitKeyValue(line, i + 1);
+      currentKey = key;
+      if (value === "") {
+        const next = nextContentLine(lines, i + 1);
+        result[key] = next?.trim().startsWith("- ") ? [] : {};
+      } else {
+        result[key] = parseScalar(value);
+      }
+      continue;
+    }
+
+    if (indent !== 2 || !currentKey) {
+      fail(`unsupported YAML shape at line ${i + 1}; use top-level keys with two-space nested values`);
+    }
+
+    if (line.startsWith("- ")) {
+      if (!Array.isArray(result[currentKey])) result[currentKey] = [];
+      result[currentKey].push(parseScalar(line.slice(2).trim()));
+      continue;
+    }
+
+    if (Array.isArray(result[currentKey])) {
+      fail(`mixed array/object values under ${currentKey} at line ${i + 1}`);
+    }
+    const [key, value] = splitKeyValue(line, i + 1);
+    result[currentKey][key] = parseScalar(value);
+  }
+  return result;
+}
+
+function nextContentLine(lines, startIndex) {
+  for (let i = startIndex; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (line && !line.startsWith("#")) return line;
+  }
+  return null;
+}
+
+function splitKeyValue(line, lineNumber) {
+  const index = line.indexOf(":");
+  if (index <= 0) fail(`expected key/value at line ${lineNumber}`);
+  return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
+}
+
+function stripComment(line) {
+  const index = line.indexOf(" #");
+  return (index >= 0 ? line.slice(0, index) : line).trim();
+}
+
+function parseScalar(value) {
+  if (value === "") return "";
+  if (value === "[]") return [];
+  if (value === "{}") return {};
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (/^-?\d+$/.test(value)) return Number(value);
+  return value.replace(/^["']|["']$/g, "");
 }
 
 function assertString(config, key) {
