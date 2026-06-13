@@ -46,7 +46,19 @@ function runHermes(prompt, work) {
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
 
-  const args = ["-m", "hermes_cli.main", "-z", prompt];
+  const args = [
+    "-m",
+    "hermes_cli.main",
+    "chat",
+    "--query",
+    prompt,
+    "--quiet",
+    "--source",
+    "tool",
+    "--max-turns",
+    "6",
+    "--ignore-rules"
+  ];
   if (model) args.push("--model", model);
 
   return new Promise((resolve, reject) => {
