@@ -201,6 +201,7 @@ async function tfyToken() {
 
 function renderVars(config) {
   const tenant = parseSecretTenant(config.secrets.gateway_api_key);
+  const secretRefs = Object.values(config.secrets || {});
   return {
     TFY_WORKSPACE_FQN: config.workspace_fqn,
     TFY_SECRET_TENANT: tenant,
@@ -222,7 +223,10 @@ function renderVars(config) {
     CONTROL_VOLUME_STORAGE_CLASS: config.control_volume_storage_class || "managed-csi-premium",
     HERMES_VOLUME_SIZE: config.hermes_volume_size || 20,
     HERMES_VOLUME_STORAGE_CLASS: config.hermes_volume_storage_class || "azurefile",
-    HERMES_SKILLS_REGISTRY_URL: config.skills_registry_url || ""
+    HERMES_SKILLS_REGISTRY_URL: config.skills_registry_url || "",
+    HERMES_DEFAULT_SKILLS: JSON.stringify(config.skills || []),
+    HERMES_DEFAULT_MCP_SERVERS: JSON.stringify(config.mcp_servers || []),
+    HERMES_DEFAULT_SECRET_REFS: JSON.stringify(secretRefs)
   };
 }
 

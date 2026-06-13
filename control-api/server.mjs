@@ -11,6 +11,9 @@ const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_INFERENCE_MODEL || process.env.HARNESS_MODEL || "openai-main/gpt-5.5";
 const HERMES_JOB_APPLICATION_NAME = process.env.HERMES_JOB_APPLICATION_NAME || "hermes-turn-runner";
 const SKILLS_REGISTRY_URL = process.env.HERMES_SKILLS_REGISTRY_URL || "";
+const DEFAULT_SKILLS = parseJsonArrayEnv("HERMES_DEFAULT_SKILLS");
+const DEFAULT_MCP_SERVERS = parseJsonArrayEnv("HERMES_DEFAULT_MCP_SERVERS");
+const DEFAULT_SECRET_REFS = parseJsonArrayEnv("HERMES_DEFAULT_SECRET_REFS");
 
 const stateFile = path.join(STATE_ROOT, "state.json");
 const defaultAgentId = "agt_hermes";
@@ -23,28 +26,61 @@ function id(prefix) {
   return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 10)}`;
 }
 
+function parseJsonArrayEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return [];
+  try {
+    const value = JSON.parse(raw);
+    return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+  } catch {
+    return raw.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+}
+
+function defaultAgent() {
+  return {
+    id: defaultAgentId,
+    name: "Hermes Agent",
+    model: HERMES_MODEL,
+    workspaceFqn: TFY_WORKSPACE_FQN,
+    skills: DEFAULT_SKILLS,
+    mcpServers: DEFAULT_MCP_SERVERS,
+    secretRefs: DEFAULT_SECRET_REFS,
+    createdAt: now(),
+    updatedAt: now()
+  };
+}
+
+function applyDefaultAgentConfig(state) {
+  state.agents ||= {};
+  const current = state.agents[defaultAgentId] || defaultAgent();
+  state.agents[defaultAgentId] = {
+    ...current,
+    name: current.name || "Hermes Agent",
+    model: HERMES_MODEL,
+    workspaceFqn: TFY_WORKSPACE_FQN,
+    skills: DEFAULT_SKILLS,
+    mcpServers: DEFAULT_MCP_SERVERS,
+    secretRefs: DEFAULT_SECRET_REFS,
+    updatedAt: now()
+  };
+  state.sessions ||= {};
+  state.runs ||= {};
+  return state;
+}
+
 async function loadState() {
   await mkdir(STATE_ROOT, { recursive: true });
   try {
-    return JSON.parse(await readFile(stateFile, "utf8"));
+    return applyDefaultAgentConfig(JSON.parse(await readFile(stateFile, "utf8")));
   } catch {
-    return {
+    return applyDefaultAgentConfig({
       agents: {
-        [defaultAgentId]: {
-          id: defaultAgentId,
-          name: "Hermes Agent",
-          model: HERMES_MODEL,
-          workspaceFqn: TFY_WORKSPACE_FQN,
-          skills: [],
-          mcpServers: [],
-          secretRefs: [],
-          createdAt: now(),
-          updatedAt: now()
-        }
+        [defaultAgentId]: defaultAgent()
       },
       sessions: {},
       runs: {}
-    };
+    });
   }
 }
 
@@ -153,10 +189,15 @@ async function triggerJob(runId) {
   const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
   if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_JOB_APPLICATION_NAME}`);
   const controlUrl = process.env.PUBLIC_BASE_URL || process.env.HARNESS_API_URL || `http://localhost:${PORT}`;
+  const command = [
+    `HARNESS_RUN_ID=${shellQuote(runId)}`,
+    `HARNESS_CONTROL_API_URL=${shellQuote(controlUrl)}`,
+    "node runner/turn-runner.mjs"
+  ].join(" ");
   const payload = {
     deploymentId,
     input: {
-      command: `HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(controlUrl)} node runner/turn-runner.mjs`
+      command: `sh -lc ${shellQuote(command)}`
     },
     metadata: {
       job_run_name_alias: runId
