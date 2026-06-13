@@ -1,0 +1,17 @@
+FROM python:3.13-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    HERMES_HOME=/opt/hermes \
+    HOME=/opt/hermes \
+    PORT=8642
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git ripgrep && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip install --no-cache-dir --upgrade pip && \
+    python -m pip install --no-cache-dir "hermes-agent[web,mcp]==0.15.1"
+
+COPY runner/hermes_health_api.py /opt/tfy-hermes-agent/hermes_health_api.py
+WORKDIR /opt/tfy-hermes-agent
+
+CMD ["python", "hermes_health_api.py"]

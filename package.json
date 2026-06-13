@@ -1,0 +1,13 @@
+{
+  "name": "@truefoundry/tfy-hermes-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node control-api/server.mjs",
+    "job": "node runner/turn-runner.mjs",
+    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

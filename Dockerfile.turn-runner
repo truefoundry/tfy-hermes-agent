@@ -1,0 +1,17 @@
+FROM python:3.13-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    HERMES_HOME=/workspace/.hermes \
+    HOME=/workspace
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm ripgrep && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip install --no-cache-dir --upgrade pip && \
+    python -m pip install --no-cache-dir "hermes-agent[mcp]==0.15.1"
+
+WORKDIR /opt/tfy-hermes-agent
+COPY package.json ./
+COPY runner ./runner
+
+CMD ["node", "runner/turn-runner.mjs"]
