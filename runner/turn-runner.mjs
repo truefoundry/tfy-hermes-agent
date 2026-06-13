@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-
 const runId = process.env.HARNESS_RUN_ID || process.env.RUN_ID;
 const controlApi = (process.env.HARNESS_CONTROL_API_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 
@@ -37,47 +35,97 @@ function buildPrompt(work) {
   return `${skills}${mcp}${memory}User: ${work.content}`;
 }
 
-function runHermes(prompt, work) {
-  const env = { ...process.env };
-  const model = work.agent?.model || process.env.HERMES_INFERENCE_MODEL;
-  if (process.env.TFY_GATEWAY_API_KEY && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = process.env.TFY_GATEWAY_API_KEY;
-  if (process.env.TFY_GATEWAY_BASE_URL && !env.OPENAI_BASE_URL) env.OPENAI_BASE_URL = process.env.TFY_GATEWAY_BASE_URL;
-  if (model) env.HERMES_INFERENCE_MODEL = model;
-  env.HERMES_YOLO_MODE = "1";
-  env.HERMES_ACCEPT_HOOKS = "1";
+function buildMessages(work) {
+  const system = [
+    "You are Hermes, a TrueFoundry-hosted assistant.",
+    "All model calls must go through the configured TrueFoundry LLM Gateway.",
+    Array.isArray(work.agent?.skills) && work.agent.skills.length
+      ? `Allowed skills: ${work.agent.skills.join(", ")}.`
+      : "No skills are enabled for this assistant.",
+    Array.isArray(work.agent?.mcpServers) && work.agent.mcpServers.length
+      ? "Use only the MCP Gateway servers configured for this assistant."
+      : "No MCP servers are enabled for this assistant."
+  ].join("\n");
+  const history = Array.isArray(work.session?.messages)
+    ? work.session.messages.map((message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: String(message.content || "")
+    }))
+    : [{ role: "user", content: buildPrompt(work) }];
+  return [{ role: "system", content: system }, ...history];
+}
 
-  const args = [
-    "-m",
-    "hermes_cli.main",
-    "chat",
-    "--query",
-    prompt,
-    "--quiet",
-    "--source",
-    "tool",
-    "--max-turns",
-    "6",
-    "--ignore-rules"
-  ];
-  if (model) args.push("--model", model);
+function gatewayChatUrl(baseUrl) {
+  const clean = baseUrl.replace(/\/+$/, "");
+  return clean.endsWith("/v1") ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`;
+}
 
-  return new Promise((resolve, reject) => {
-    const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`hermes exited ${code}: ${stderr || stdout}`));
-    });
+function resolveMcpServers(work, gatewayBaseUrl) {
+  const cleanBase = gatewayBaseUrl.replace(/\/+$/, "");
+  return (work.agent?.mcpServers || []).map((entry) => {
+    let url = String(entry);
+    if (url.startsWith("${gateway_base_url}/")) {
+      url = `${cleanBase}/${url.slice("${gateway_base_url}/".length)}`;
+    } else if (url.startsWith("/")) {
+      url = `${cleanBase}${url}`;
+    }
+    return {
+      type: "mcp-server-url",
+      url,
+      enable_all_tools: true
+    };
   });
+}
+
+function extractGatewayText(body) {
+  const message = body?.choices?.[0]?.message;
+  if (typeof message?.content === "string") return message.content;
+  if (Array.isArray(message?.content)) {
+    return message.content
+      .map((part) => typeof part === "string" ? part : part?.text || part?.content || "")
+      .join("")
+      .trim();
+  }
+  if (typeof body?.output_text === "string") return body.output_text;
+  if (typeof body?.content === "string") return body.content;
+  return "";
+}
+
+async function runGatewayChat(work) {
+  const model = work.agent?.model || process.env.HERMES_INFERENCE_MODEL;
+  const gatewayBaseUrl = process.env.TFY_GATEWAY_BASE_URL || process.env.TFY_BASE_URL || "";
+  const gatewayApiKey = process.env.TFY_GATEWAY_API_KEY || process.env.TFY_API_KEY || "";
+  if (!gatewayBaseUrl || !gatewayApiKey) {
+    throw new Error("TFY_GATEWAY_BASE_URL and TFY_GATEWAY_API_KEY are required");
+  }
+  const payload = {
+    model,
+    messages: buildMessages(work),
+    stream: false,
+    iteration_limit: 6
+  };
+  const mcpServers = resolveMcpServers(work, gatewayBaseUrl);
+  if (mcpServers.length) payload.mcp_servers = mcpServers;
+
+  const res = await fetch(gatewayChatUrl(gatewayBaseUrl), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${gatewayApiKey}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`LLM Gateway chat failed ${res.status}: ${text.slice(0, 1000)}`);
+  const body = text ? JSON.parse(text) : {};
+  const result = extractGatewayText(body).trim();
+  if (!result) throw new Error(`LLM Gateway returned an empty response: ${text.slice(0, 1000)}`);
+  return result;
 }
 
 try {
   const work = await getJson(`/api/internal/runs/${encodeURIComponent(runId)}/work-item`);
-  const result = await runHermes(buildPrompt(work), work);
+  const result = await runGatewayChat(work);
   await postJson(`/api/internal/runs/${encodeURIComponent(runId)}/complete`, {
     status: "completed",
     result

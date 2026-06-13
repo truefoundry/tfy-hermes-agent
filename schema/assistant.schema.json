@@ -42,7 +42,10 @@
     },
     "mcp_servers": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string",
+        "pattern": "^(https?://.*|\\$\\{gateway_base_url\\}|)/mcp/[^/]+/server/?$"
+      }
     },
     "skills": {
       "type": "array",

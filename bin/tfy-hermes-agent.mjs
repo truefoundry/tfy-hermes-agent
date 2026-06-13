@@ -144,6 +144,20 @@ function validateShape(config) {
       fail(`${key} must be an array of strings`);
     }
   }
+  for (const server of config.mcp_servers || []) {
+    if (!isMcpGatewayUrl(server)) {
+      fail(`mcp_servers entries must be MCP Gateway URLs or paths: ${server}`);
+    }
+  }
+}
+
+function isMcpGatewayUrl(value) {
+  return /^(https?:\/\/.*|\$\{gateway_base_url\}|)\/mcp\/[^/]+\/server\/?$/.test(String(value));
+}
+
+function mcpServerNameFromUrl(value) {
+  const match = String(value).match(/\/mcp\/([^/]+)\/server\/?$/);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 async function tfyFetch(config, apiPath) {
@@ -167,7 +181,9 @@ async function validateLiveRefs(config) {
   if (Array.isArray(config.mcp_servers) && config.mcp_servers.length) {
     const body = await tfyFetch(config, "/api/svc/v1/mcp-servers");
     const visible = new Set((body?.data || []).map((server) => server.name || server.manifest?.name).filter(Boolean));
-    const missing = config.mcp_servers.filter((name) => !visible.has(name));
+    const missing = config.mcp_servers
+      .map(mcpServerNameFromUrl)
+      .filter((name) => name && !visible.has(name));
     if (missing.length) fail(`MCP servers not visible through gateway: ${missing.join(", ")}`);
   }
   if (Array.isArray(config.skills) && config.skills.length) {

@@ -18,7 +18,7 @@ Before writing `assistant.yaml`, you need:
 - public hostnames for the Hermes control API and optional Hermes API
 - a TrueFoundry SecretGroup for gateway credentials
 - only `tfy-secret://...` refs in config; no raw secrets
-- MCP server names that are visible through TrueFoundry MCP Gateway with your token
+- MCP Gateway URLs for servers visible with your token
 - skill names that exist in your Skills Registry
 - a model reachable through your TrueFoundry AI Gateway
 
@@ -40,7 +40,7 @@ secrets:
   gateway_api_key: tfy-secret://tenant:secret-group:TFY-GATEWAY-API-KEY
 
 mcp_servers:
-  - linear
+  - ${gateway_base_url}/mcp/linear/server
 
 skills:
   - truefoundry-service-test

@@ -177,9 +177,19 @@ async function validateAgentPatch(patch) {
   if (patch.mcpServers) {
     const visibleServers = await listGatewayServers();
     const visibleNames = new Set(visibleServers.map((server) => server.name));
-    const unknown = patch.mcpServers.filter((server) => !visibleNames.has(String(server)));
+    const unknown = patch.mcpServers
+      .filter((server) => !isMcpGatewayUrl(server) || !visibleNames.has(mcpServerNameFromUrl(server)));
     if (unknown.length) throw new Error(`MCP servers not visible through TrueFoundry MCP Gateway: ${unknown.join(", ")}`);
   }
+}
+
+function isMcpGatewayUrl(value) {
+  return /^(https?:\/\/.*|\$\{gateway_base_url\}|)\/mcp\/[^/]+\/server\/?$/.test(String(value));
+}
+
+function mcpServerNameFromUrl(value) {
+  const match = String(value).match(/\/mcp\/([^/]+)\/server\/?$/);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 async function triggerJob(runId) {
