@@ -1,58 +1,56 @@
 # tfy-hermes-agent
 
-Reusable TrueFoundry deployment package for Hermes Agent.
-
-This repo keeps the deployment wrapper small: a control API, a per-turn job
-runner, Dockerfiles, and TrueFoundry YAML templates. It does not vendor the full
-upstream Hermes codebase. The runtime image installs `hermes-agent` at build
-time.
-
-## Why This Exists
-
-Projects should not need to copy a large agent repo just to host Hermes on
-TrueFoundry. They should be able to keep a small `hermes.yaml` in their own repo
-or render the templates here with different workspace, host, model, and secret
-settings.
-
-## Included
-
-- `control-api/` - HTTP control plane for agents, sessions, runs, MCP visibility,
-  and run completion callbacks.
-- `runner/` - TrueFoundry Job entrypoint that executes one `hermes -z` turn.
-- `manifests/` - reusable TrueFoundry YAML templates.
-- `examples/hermes.yaml` - compact project-local example for deploying the
-  control API from this repo.
-
-## Policy
-
-- Skills must be loaded from the configured Skills Registry only.
-- Secrets must be referenced as `tfy-secret://...`; raw secret values are
-  rejected by the control API.
-- MCP servers must be visible through TrueFoundry MCP Gateway with the configured
-  token before they can be attached by name.
-
-## Render Manifests
+Deploy a Hermes assistant to TrueFoundry from a project-local `assistant.yaml`.
 
 ```bash
-export TFY_WORKSPACE_FQN=tfy-ea-dev-eo-az:sai-ws
-export TFY_SECRET_TENANT=tfy-eo
-export TFY_BASE_URL=https://tfy-eo.truefoundry.cloud
-export CONTROL_API_HOST=harness-control-api-sai-ws.ml.tfy-eo.truefoundry.cloud
-export HERMES_API_HOST=hermes-api-sai-ws.ml.tfy-eo.truefoundry.cloud
-export HERMES_REPO_URL=https://github.com/truefoundry/tfy-hermes-agent
-export HERMES_SOURCE_REF=main
-
-./scripts/render-manifests.sh
+npx github:truefoundry/tfy-hermes-agent deploy assistant.yaml
 ```
 
-Deploy the rendered files with `tfy deploy -f .rendered/<file>.yaml`.
+No npm/PyPI package is required. The runner comes from GitHub.
 
-## Project-Local YAML
+## Prereqs
 
-If another project only wants to reference this package, copy
-`examples/hermes.yaml` into that project and swap:
+Before writing `assistant.yaml`, you need:
 
-- `workspace_fqn`
-- exposed host
-- `repo_url` and `ref` if using a fork or pinned commit
-- SecretGroup tenant/name/key references
+- TrueFoundry host, for example `https://tfy.example.com`
+- TrueFoundry workspace FQN, for example `cluster:workspace`
+- TrueFoundry credentials available locally or in CI
+- public hostnames for the Hermes control API and optional Hermes API
+- a TrueFoundry SecretGroup for gateway credentials
+- only `tfy-secret://...` refs in config; no raw secrets
+- MCP server names that are visible through TrueFoundry MCP Gateway with your token
+- skill names that exist in your Skills Registry
+- a model reachable through your TrueFoundry AI Gateway
+
+## Minimal `assistant.yaml`
+
+```yaml
+name: devrel-assistant
+workspace_fqn: cluster:workspace
+tfy_base_url: https://tfy.example.com
+
+hosts:
+  control_api: hermes-control.example.com
+  hermes_api: hermes-api.example.com
+
+model: openai-main/gpt-5.5
+
+secrets:
+  gateway_base_url: tfy-secret://tenant:secret-group:TFY-GATEWAY-BASE-URL
+  gateway_api_key: tfy-secret://tenant:secret-group:TFY-GATEWAY-API-KEY
+
+mcp_servers:
+  - linear
+
+skills:
+  - truefoundry-service-test
+```
+
+## Commands
+
+```bash
+npx github:truefoundry/tfy-hermes-agent validate assistant.yaml
+npx github:truefoundry/tfy-hermes-agent render assistant.yaml
+npx github:truefoundry/tfy-hermes-agent deploy assistant.yaml
+npx github:truefoundry/tfy-hermes-agent test assistant.yaml
+```
