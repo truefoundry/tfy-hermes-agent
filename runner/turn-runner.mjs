@@ -60,7 +60,7 @@ function gatewayChatUrl(baseUrl) {
   return clean.endsWith("/v1") ? `${clean}/chat/completions` : `${clean}/v1/chat/completions`;
 }
 
-function resolveMcpServers(work, gatewayBaseUrl) {
+function resolveMcpServers(work, gatewayBaseUrl, gatewayApiKey) {
   const cleanBase = gatewayBaseUrl.replace(/\/+$/, "");
   return (work.agent?.mcpServers || []).map((entry) => {
     let url = String(entry);
@@ -72,6 +72,9 @@ function resolveMcpServers(work, gatewayBaseUrl) {
     return {
       type: "mcp-server-url",
       url,
+      headers: {
+        Authorization: `Bearer ${gatewayApiKey}`
+      },
       enable_all_tools: true
     };
   });
@@ -104,7 +107,7 @@ async function runGatewayChat(work) {
     stream: false,
     iteration_limit: 6
   };
-  const mcpServers = resolveMcpServers(work, gatewayBaseUrl);
+  const mcpServers = resolveMcpServers(work, gatewayBaseUrl, gatewayApiKey);
   if (mcpServers.length) payload.mcp_servers = mcpServers;
 
   const res = await fetch(gatewayChatUrl(gatewayBaseUrl), {
