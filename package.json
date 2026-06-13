@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node control-api/server.mjs",
     "job": "node runner/turn-runner.mjs",
-    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs && node --check bin/tfy-hermes-agent.mjs"
+    "check": "node --check control-api/server.mjs && node --check control-api/slack-bridge.mjs && node --check runner/turn-runner.mjs && node --check bin/tfy-hermes-agent.mjs",
+    "test:slack": "node --test control-api/slack-bridge.test.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -38,6 +38,7 @@ function parseAssistantYaml(raw) {
   const result = {};
   const lines = raw.split(/\r?\n/);
   let currentKey = null;
+  let currentObjectKey = null;
   for (let i = 0; i < lines.length; i += 1) {
     const original = lines[i];
     if (!original.trim() || original.trim().startsWith("#")) continue;
@@ -48,6 +49,7 @@ function parseAssistantYaml(raw) {
     if (indent === 0) {
       const [key, value] = splitKeyValue(line, i + 1);
       currentKey = key;
+      currentObjectKey = null;
       if (value === "") {
         const next = nextContentLine(lines, i + 1);
         result[key] = next?.trim().startsWith("- ") ? [] : {};
@@ -57,21 +59,37 @@ function parseAssistantYaml(raw) {
       continue;
     }
 
-    if (indent !== 2 || !currentKey) {
+    if (!currentKey || ![2, 4].includes(indent)) {
       fail(`unsupported YAML shape at line ${i + 1}; use top-level keys with two-space nested values`);
     }
 
-    if (line.startsWith("- ")) {
+    if (indent === 2 && line.startsWith("- ")) {
       if (!Array.isArray(result[currentKey])) result[currentKey] = [];
       result[currentKey].push(parseScalar(line.slice(2).trim()));
+      currentObjectKey = null;
       continue;
     }
 
-    if (Array.isArray(result[currentKey])) {
+    if (indent === 4 && line.startsWith("- ")) {
+      if (!currentObjectKey || Array.isArray(result[currentKey])) {
+        fail(`nested array item has no parent key at line ${i + 1}`);
+      }
+      if (!Array.isArray(result[currentKey][currentObjectKey])) result[currentKey][currentObjectKey] = [];
+      result[currentKey][currentObjectKey].push(parseScalar(line.slice(2).trim()));
+      continue;
+    }
+
+    if (indent !== 2 || Array.isArray(result[currentKey])) {
       fail(`mixed array/object values under ${currentKey} at line ${i + 1}`);
     }
     const [key, value] = splitKeyValue(line, i + 1);
-    result[currentKey][key] = parseScalar(value);
+    if (value === "") {
+      const next = nextContentLine(lines, i + 1);
+      result[currentKey][key] = next?.trim().startsWith("- ") ? [] : {};
+    } else {
+      result[currentKey][key] = parseScalar(value);
+    }
+    currentObjectKey = key;
   }
   return result;
 }
@@ -99,6 +117,13 @@ function parseScalar(value) {
   if (value === "") return "";
   if (value === "[]") return [];
   if (value === "{}") return {};
+  if (/^\[.*\]$/.test(value)) {
+    try {
+      return JSON.parse(value.replace(/'/g, '"'));
+    } catch {
+      return value.slice(1, -1).split(",").map((item) => item.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+    }
+  }
   if (value === "true") return true;
   if (value === "false") return false;
   if (/^-?\d+$/.test(value)) return Number(value);
@@ -147,6 +172,24 @@ function validateShape(config) {
   for (const server of config.mcp_servers || []) {
     if (!isMcpGatewayUrl(server)) {
       fail(`mcp_servers entries must be MCP Gateway URLs or paths: ${server}`);
+    }
+  }
+  if (config.slack !== undefined) {
+    if (!config.slack || typeof config.slack !== "object" || Array.isArray(config.slack)) fail("slack must be an object");
+    const slack = config.slack;
+    if (slack.enabled !== undefined && typeof slack.enabled !== "boolean") fail("slack.enabled must be a boolean");
+    if (slack.handles !== undefined && (!Array.isArray(slack.handles) || slack.handles.some((item) => typeof item !== "string" || !item.trim()))) {
+      fail("slack.handles must be an array of strings");
+    }
+    if (slack.channel_ids !== undefined && (!Array.isArray(slack.channel_ids) || slack.channel_ids.some((item) => typeof item !== "string" || !item.trim()))) {
+      fail("slack.channel_ids must be an array of strings");
+    }
+    if (slack.response_mode !== undefined && !["mentions", "all-channel"].includes(slack.response_mode)) {
+      fail("slack.response_mode must be mentions or all-channel");
+    }
+    if (slack.enabled) {
+      assertSecretRef(config.secrets.slack_bot_token, "secrets.slack_bot_token");
+      assertSecretRef(config.secrets.slack_signing_secret, "secrets.slack_signing_secret");
     }
   }
 }
@@ -242,7 +285,17 @@ function renderVars(config) {
     HERMES_SKILLS_REGISTRY_URL: config.skills_registry_url || "",
     HERMES_DEFAULT_SKILLS: JSON.stringify(config.skills || []),
     HERMES_DEFAULT_MCP_SERVERS: JSON.stringify(config.mcp_servers || []),
-    HERMES_DEFAULT_SECRET_REFS: JSON.stringify(secretRefs)
+    HERMES_DEFAULT_SECRET_REFS: JSON.stringify(secretRefs),
+    SLACK_ENABLED: String(config.slack?.enabled === true),
+    SLACK_APP_NAME: config.slack?.app_name || config.name,
+    SLACK_BOT_TOKEN_REF: config.secrets.slack_bot_token || '""',
+    SLACK_SIGNING_SECRET_REF: config.secrets.slack_signing_secret || '""',
+    SLACK_BOT_USER_ID: config.slack?.bot_user_id || "",
+    SLACK_TEAM_ID: config.slack?.team_id || "",
+    SLACK_TEAM_NAME: config.slack?.team_name || "",
+    SLACK_HANDLES: JSON.stringify(config.slack?.handles || ["hermes"]),
+    SLACK_CHANNEL_IDS: JSON.stringify(config.slack?.channel_ids || []),
+    SLACK_RESPONSE_MODE: config.slack?.response_mode || "mentions"
   };
 }
 

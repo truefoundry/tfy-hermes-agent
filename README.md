@@ -21,6 +21,7 @@ Before writing `assistant.yaml`, you need:
 - MCP Gateway URLs for servers visible with your token
 - skill names that exist in your Skills Registry
 - a model reachable through your TrueFoundry AI Gateway
+- optional Slack app bot token and signing secret stored as TFY secrets
 
 ## Minimal `assistant.yaml`
 
@@ -45,6 +46,24 @@ mcp_servers:
 skills:
   - truefoundry-service-test
 ```
+
+Optional Slack bridge:
+
+```yaml
+secrets:
+  slack_bot_token: tfy-secret://tenant:secret-group:SLACK-BOT-TOKEN
+  slack_signing_secret: tfy-secret://tenant:secret-group:SLACK-SIGNING-SECRET
+
+slack:
+  enabled: true
+  app_name: Hermes Agent
+  handles:
+    - hermes
+  channel_ids: []
+  response_mode: mentions
+```
+
+Slack request URL: `https://<control_api_host>/slack/events`.
 
 ## Commands
 

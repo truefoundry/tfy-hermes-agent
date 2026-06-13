@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { createSlackBridge, ensureSlackState, normalizeSlackAgentConfig, parseSlackConfig } from "./slack-bridge.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_ROOT = process.env.HARNESS_STATE_DIR || "/data/state";
@@ -14,6 +15,7 @@ const SKILLS_REGISTRY_URL = process.env.HERMES_SKILLS_REGISTRY_URL || "";
 const DEFAULT_SKILLS = parseJsonArrayEnv("HERMES_DEFAULT_SKILLS");
 const DEFAULT_MCP_SERVERS = parseJsonArrayEnv("HERMES_DEFAULT_MCP_SERVERS");
 const DEFAULT_SECRET_REFS = parseJsonArrayEnv("HERMES_DEFAULT_SECRET_REFS");
+const SLACK_CONFIG = parseSlackConfig();
 
 const stateFile = path.join(STATE_ROOT, "state.json");
 const defaultAgentId = "agt_hermes";
@@ -38,6 +40,7 @@ function parseJsonArrayEnv(name) {
 }
 
 function defaultAgent() {
+  const slack = normalizeSlackAgentConfig(SLACK_CONFIG);
   return {
     id: defaultAgentId,
     name: "Hermes Agent",
@@ -46,6 +49,7 @@ function defaultAgent() {
     skills: DEFAULT_SKILLS,
     mcpServers: DEFAULT_MCP_SERVERS,
     secretRefs: DEFAULT_SECRET_REFS,
+    slack,
     createdAt: now(),
     updatedAt: now()
   };
@@ -54,6 +58,7 @@ function defaultAgent() {
 function applyDefaultAgentConfig(state) {
   state.agents ||= {};
   const current = state.agents[defaultAgentId] || defaultAgent();
+  const slack = normalizeSlackAgentConfig(SLACK_CONFIG);
   state.agents[defaultAgentId] = {
     ...current,
     name: current.name || "Hermes Agent",
@@ -62,10 +67,12 @@ function applyDefaultAgentConfig(state) {
     skills: DEFAULT_SKILLS,
     mcpServers: DEFAULT_MCP_SERVERS,
     secretRefs: DEFAULT_SECRET_REFS,
+    slack,
     updatedAt: now()
   };
   state.sessions ||= {};
   state.runs ||= {};
+  ensureSlackState(state);
   return state;
 }
 
@@ -228,11 +235,81 @@ async function triggerJob(runId) {
   return text ? JSON.parse(text) : {};
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function enqueueSessionMessage(sessionId, content, source = {}) {
+  const state = await loadState();
+  const session = state.sessions[sessionId];
+  if (!session) throw new Error("session not found");
+  const message = String(content || "");
+  session.messages.push({ role: "user", content: message, source, createdAt: now() });
+  session.updatedAt = now();
+  const runId = id("run");
+  state.runs[runId] = {
+    id: runId,
+    sessionId: session.id,
+    agentId: session.agentId,
+    status: "queued",
+    content: message,
+    source,
+    createdAt: now(),
+    updatedAt: now()
+  };
+  await saveState(state);
+  const trigger = await triggerJob(runId);
+  const nextState = await loadState();
+  if (nextState.runs[runId]) {
+    nextState.runs[runId].status = trigger ? "running" : "queued";
+    nextState.runs[runId].trigger = trigger;
+    nextState.runs[runId].updatedAt = now();
+    await saveState(nextState);
+    return nextState.runs[runId];
+  }
+  return { id: runId, status: trigger ? "running" : "queued", trigger };
+}
+
+async function waitForRun(runId, timeoutMs = Number(process.env.SLACK_RUN_TIMEOUT_SECONDS || 240) * 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await loadState();
+    const run = state.runs[runId];
+    if (!run) throw new Error(`run not found: ${runId}`);
+    if (["completed", "failed"].includes(run.status)) return { run };
+    await sleep(2000);
+  }
+  return {
+    run: {
+      id: runId,
+      status: "failed",
+      error: `timed out waiting for run after ${Math.round(timeoutMs / 1000)}s`
+    }
+  };
+}
+
 function sessionMemory(session) {
   return (session.messages || [])
     .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
     .join("\n\n");
 }
+
+const slackBridge = createSlackBridge({
+  config: SLACK_CONFIG,
+  loadState,
+  saveState,
+  send,
+  sendText,
+  defaultAgentId,
+  now,
+  id,
+  enqueueSessionMessage,
+  waitForRun,
+  publicBaseUrl(req) {
+    const host = req.headers.host || "";
+    return process.env.PUBLIC_BASE_URL || process.env.HARNESS_API_URL || (host ? `http://${host}` : "");
+  }
+});
 
 async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -245,6 +322,18 @@ async function handle(req, res) {
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
       return send(res, 200, { agents: Object.values(state.agents) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/slack/status") {
+      return slackBridge.status(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/slack/manifest") {
+      return slackBridge.manifest(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/slack/events") {
+      return slackBridge.events(req, res);
     }
 
     const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
@@ -280,6 +369,8 @@ async function handle(req, res) {
         id: sessionId,
         agentId,
         userId: body.userId || "default",
+        title: body.title || "",
+        source: body.source || {},
         messages: [],
         createdAt: now(),
         updatedAt: now()
@@ -294,25 +385,8 @@ async function handle(req, res) {
       if (!session) return send(res, 404, { error: "session not found" });
       const body = await json(req);
       const content = String(body.content || body.message || "");
-      session.messages.push({ role: "user", content, createdAt: now() });
-      session.updatedAt = now();
-      const runId = id("run");
-      state.runs[runId] = {
-        id: runId,
-        sessionId: session.id,
-        agentId: session.agentId,
-        status: "queued",
-        content,
-        createdAt: now(),
-        updatedAt: now()
-      };
-      await saveState(state);
-      const trigger = await triggerJob(runId);
-      state.runs[runId].status = trigger ? "running" : "queued";
-      state.runs[runId].trigger = trigger;
-      state.runs[runId].updatedAt = now();
-      await saveState(state);
-      return send(res, 202, { run: state.runs[runId] });
+      const run = await enqueueSessionMessage(session.id, content, body.source || {});
+      return send(res, 202, { run });
     }
 
     const workMatch = url.pathname.match(/^\/api\/internal\/runs\/([^/]+)\/work-item$/);

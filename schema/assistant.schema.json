@@ -37,7 +37,9 @@
       "additionalProperties": false,
       "properties": {
         "gateway_base_url": { "type": "string", "pattern": "^tfy-secret://" },
-        "gateway_api_key": { "type": "string", "pattern": "^tfy-secret://" }
+        "gateway_api_key": { "type": "string", "pattern": "^tfy-secret://" },
+        "slack_bot_token": { "type": "string", "pattern": "^tfy-secret://" },
+        "slack_signing_secret": { "type": "string", "pattern": "^tfy-secret://" }
       }
     },
     "mcp_servers": {
@@ -50,6 +52,29 @@
     "skills": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "slack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "app_name": { "type": "string" },
+        "handles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "channel_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "response_mode": {
+          "type": "string",
+          "enum": ["mentions", "all-channel"]
+        },
+        "bot_user_id": { "type": "string" },
+        "team_id": { "type": "string" },
+        "team_name": { "type": "string" }
+      }
     },
     "tests": {
       "type": "object",
