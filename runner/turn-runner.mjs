@@ -48,7 +48,6 @@ function runHermes(prompt, work) {
 
   const args = ["-m", "hermes_cli.main", "-z", prompt];
   if (model) args.push("--model", model);
-  if (work.agent?.mcpServers?.length) args.push("--toolsets", work.agent.mcpServers.join(","));
 
   return new Promise((resolve, reject) => {
     const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
