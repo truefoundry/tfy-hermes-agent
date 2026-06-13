@@ -217,6 +217,10 @@ function renderVars(config) {
     HERMES_API_NAME: config.hermes_api_name || "hermes-api",
     CONTROL_VOLUME_NAME: config.control_volume || "hermes-control-state",
     HERMES_VOLUME_NAME: config.hermes_volume || "hermes-state",
+    CONTROL_VOLUME_SIZE: config.control_volume_size || 10,
+    CONTROL_VOLUME_STORAGE_CLASS: config.control_volume_storage_class || "managed-csi-premium",
+    HERMES_VOLUME_SIZE: config.hermes_volume_size || 20,
+    HERMES_VOLUME_STORAGE_CLASS: config.hermes_volume_storage_class || "azurefile",
     HERMES_SKILLS_REGISTRY_URL: config.skills_registry_url || ""
   };
 }

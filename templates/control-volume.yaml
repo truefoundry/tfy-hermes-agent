@@ -1,5 +1,7 @@
 name: ${CONTROL_VOLUME_NAME}
 type: volume
 workspace_fqn: ${TFY_WORKSPACE_FQN}
-size: "20Gi"
-access_mode: ReadWriteOnce
+config:
+  type: dynamic
+  size: ${CONTROL_VOLUME_SIZE}
+  storage_class: ${CONTROL_VOLUME_STORAGE_CLASS}
