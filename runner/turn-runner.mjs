@@ -70,7 +70,8 @@ function runHermes(prompt, work) {
 
   const args = ["-z", prompt];
   if (model) args.push("--model", model);
-  if (work.agent?.mcpServers?.length) args.push("--toolsets", work.agent.mcpServers.join(","));
+  const toolsets = (work.agent?.mcpServers || []).filter((entry) => !/^https?:\/\//i.test(String(entry)));
+  if (toolsets.length) args.push("--toolsets", toolsets.join(","));
 
   return new Promise((resolve, reject) => {
     const child = spawn("hermes", args, { env, stdio: ["ignore", "pipe", "pipe"] });
