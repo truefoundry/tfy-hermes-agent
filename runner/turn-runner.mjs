@@ -59,6 +59,22 @@ function buildPrompt(work) {
   return `${preamble}${skills}${mcp}${memory}User: ${work.content}`;
 }
 
+function redact(text) {
+  return String(text || "")
+    .replace(/\b(?:xoxb|xoxp|xapp)-[a-zA-Z0-9-]+/g, "slack-token-redacted")
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}/g, "sk-redacted")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer redacted");
+}
+
+function emitRunEvent(type, text) {
+  return postJson(`/api/internal/runs/${encodeURIComponent(runId)}/events`, {
+    type,
+    text
+  }).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+  });
+}
+
 function runHermes(prompt, work) {
   const env = { ...process.env };
   const model = work.agent?.model || process.env.HERMES_INFERENCE_MODEL;
@@ -74,6 +90,15 @@ function runHermes(prompt, work) {
   if (toolsets.length) args.push("--toolsets", toolsets.join(","));
 
   return new Promise((resolve, reject) => {
+    emitRunEvent("runner_diagnostic", JSON.stringify({
+      phase: "start",
+      model: model || null,
+      promptChars: prompt.length,
+      mcpServerCount: Array.isArray(work.agent?.mcpServers) ? work.agent.mcpServers.length : 0,
+      toolsets,
+      openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
+      openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY)
+    }));
     const child = spawn("hermes", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -89,14 +114,13 @@ function runHermes(prompt, work) {
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       stdout += text;
-      postJson(`/api/internal/runs/${encodeURIComponent(runId)}/events`, {
-        type: "stdout_delta",
-        text
-      }).catch((error) => {
-        console.error(error instanceof Error ? error.message : String(error));
-      });
+      emitRunEvent("stdout_delta", text);
     });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      stderr += text;
+      emitRunEvent("stderr_delta", redact(text));
+    });
     child.on("error", (error) => {
       clearTimeout(timer);
       reject(error);
@@ -104,8 +128,21 @@ function runHermes(prompt, work) {
     child.on("exit", (code) => {
       clearTimeout(timer);
       if (killed) return reject(new Error(`hermes turn exceeded HARNESS_TURN_TIMEOUT_MS=${turnTimeoutMs}ms`));
-      if (code === 0) return resolve(stdout.trim());
-      reject(new Error(`hermes exited ${code}: ${stderr || stdout}`));
+      const exitDiagnostic = emitRunEvent("runner_diagnostic", JSON.stringify({
+        phase: "exit",
+        code,
+        stdoutChars: stdout.length,
+        stdoutTrimmedChars: stdout.trim().length,
+        stderrChars: stderr.length
+      }));
+      exitDiagnostic.finally(() => {
+        if (code === 0) {
+          const result = stdout.trim();
+          if (!result) return reject(new Error(`hermes exited 0 with empty stdout; stderr chars=${stderr.length}`));
+          return resolve(result);
+        }
+        reject(new Error(`hermes exited ${code}: ${stderr || stdout}`));
+      });
     });
   });
 }

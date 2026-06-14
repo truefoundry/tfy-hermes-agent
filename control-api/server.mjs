@@ -164,6 +164,7 @@ async function saveState(state) {
 }
 
 let mutationQueue = Promise.resolve();
+let shuttingDown = false;
 
 function withState(mutator) {
   const next = mutationQueue.then(async () => {
@@ -1983,6 +1984,8 @@ async function readJsonOrError(req, res) {
 }
 
 async function handle(req, res) {
+  if (shuttingDown) return send(res, 503, { error: "server is shutting down" });
+
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   try {
