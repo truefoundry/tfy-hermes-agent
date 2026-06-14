@@ -306,6 +306,7 @@ function runnerManifest(config) {
       HARNESS_TURN_TIMEOUT_MS: "600000",
       TFY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
       TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
+      TFY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
       TFY_GATEWAY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
       TFY_SECRET_TENANT: config.tenant,
       TFY_WORKSPACE_FQN: config.workspaceFqn,

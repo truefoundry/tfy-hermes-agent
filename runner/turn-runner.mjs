@@ -109,9 +109,22 @@ function mcpConfigLines(servers) {
     lines.push(`  ${name}:`);
     lines.push(`    url: ${yamlString(url)}`);
     lines.push("    headers:");
-    lines.push("      Authorization: \"Bearer ${TFY_GATEWAY_API_KEY}\"");
+    lines.push("      Authorization: \"Bearer ${TFY_API_KEY}\"");
   });
   return lines;
+}
+
+function mcpToolsetNames(servers) {
+  const seen = new Map();
+  return (servers || []).map((entry, index) => {
+    const value = String(entry || "").trim();
+    if (!value) return "";
+    if (!/^https?:\/\//i.test(value)) return value;
+    const baseName = mcpServerNameFromUrl(value, index);
+    const count = seen.get(baseName) || 0;
+    seen.set(baseName, count + 1);
+    return count ? `${baseName}-${count + 1}` : baseName;
+  }).filter(Boolean);
 }
 
 function looksLikeHermesFailure(text) {
@@ -326,17 +339,54 @@ async function runHermes(prompt, work) {
   const env = { ...process.env };
   const model = work.agent?.model || process.env.HERMES_INFERENCE_MODEL;
   if (process.env.TFY_GATEWAY_API_KEY && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = process.env.TFY_GATEWAY_API_KEY;
+  if (process.env.TFY_GATEWAY_API_KEY && !env.TFY_API_KEY) env.TFY_API_KEY = process.env.TFY_GATEWAY_API_KEY;
   if (process.env.TFY_GATEWAY_BASE_URL && !env.OPENAI_BASE_URL) env.OPENAI_BASE_URL = process.env.TFY_GATEWAY_BASE_URL;
   if (model) env.HERMES_INFERENCE_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
   const hermesHome = await writeHermesConfig(env, model, work);
 
-  const args = ["-z", prompt];
-  if (model) args.push("--model", model);
-  if (env.OPENAI_BASE_URL) args.push("--provider", "custom");
-  const toolsets = (work.agent?.mcpServers || []).filter((entry) => !/^https?:\/\//i.test(String(entry)));
-  if (toolsets.length) args.push("--toolsets", toolsets.join(","));
+  const promptPath = path.join(hermesHome, `prompt-${runId}.txt`);
+  const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
+  await writeFile(promptPath, prompt, { mode: 0o600 });
+  await writeFile(wrapperPath, String.raw`
+import sys
+
+from hermes_cli.config import load_config
+from hermes_cli.oneshot import run_oneshot
+
+
+def _startup():
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools()
+    except Exception:
+        pass
+    try:
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=True)
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    prompt_path = sys.argv[1]
+    model = sys.argv[2] or None
+    provider = sys.argv[3] or None
+    toolsets = sys.argv[4] or None
+    with open(prompt_path, "r", encoding="utf-8") as handle:
+        prompt = handle.read()
+    _startup()
+    raise SystemExit(run_oneshot(prompt, model=model, provider=provider, toolsets=toolsets))
+`, { mode: 0o600 });
+
+  const toolsets = mcpToolsetNames(work.agent?.mcpServers);
+  const args = [wrapperPath, promptPath, model || "", env.OPENAI_BASE_URL ? "custom" : "", toolsets.join(",")];
 
   return new Promise((resolve, reject) => {
     emitRunEvent("runner_diagnostic", JSON.stringify({
@@ -349,7 +399,7 @@ async function runHermes(prompt, work) {
       openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY),
       hermesHomeConfigured: Boolean(hermesHome)
     }));
-    const child = spawn("hermes", args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let killed = false;
