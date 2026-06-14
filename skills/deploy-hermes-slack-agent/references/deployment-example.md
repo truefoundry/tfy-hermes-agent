@@ -14,6 +14,7 @@ Collect these first:
 - `host`: optional public agent API URL; infer from agent name, workspace, and tenant env when omitted
 - `workspace_fqn`: TrueFoundry workspace FQN
 - `secrets`: SecretGroup name, default `<name>-hermes-secrets`
+- `slack`: optional access policy with `channels` and `users` allowlists
 - `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
 
 ## hermes.yaml
@@ -38,6 +39,13 @@ secrets: devrel-assistant-hermes-secrets
 snapshot:
   ml_repo: devrel-assistant
   artifact_name: devrel-assistant-state-snapshots
+
+# Optional. Omit this block when Slack access is unrestricted.
+slack:
+  channels:
+    - C0123456789
+  users:
+    - U0123456789
 
 skills: []
 
@@ -76,6 +84,10 @@ Do not ask the user to generate or paste it into chat.
    - `https://<host>/slack/interactions`
 
 Do not use Socket Mode. Do not create Slack user groups.
+
+If `slack` is omitted, Slack access is open anywhere the app is installed and
+invited. If `slack.channels` is set, only those channel/group/DM IDs can trigger
+the agent. If `slack.users` is set, only those user IDs can trigger the agent.
 
 ## Deployment
 

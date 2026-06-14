@@ -16,6 +16,13 @@ snapshot:
   ml_repo: devrel-assistant
   artifact_name: devrel-assistant-state-snapshots
 
+# Optional. Omit this block or leave either list empty for unrestricted access.
+slack:
+  channels:
+    - C0123456789
+  users:
+    - U0123456789
+
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
   - agent-skill:tfy-eo/sai-mlrepo/event-follow-up:3

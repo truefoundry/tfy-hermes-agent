@@ -47,6 +47,8 @@ const defaultAgentInstructions = process.env.HERMES_AGENT_INSTRUCTIONS || "";
 const defaultAgentSkills = listFromEnv(process.env.HERMES_AGENT_SKILLS);
 const defaultAgentMcpServers = listFromEnv(process.env.HERMES_AGENT_MCP_SERVERS);
 const defaultAgentSecretRefs = listFromEnv(process.env.HERMES_AGENT_SECRET_REFS);
+const defaultAgentSlackAllowedChannelIds = normalizeSlackChannelIds(listFromEnv(process.env.HERMES_SLACK_ALLOWED_CHANNELS));
+const defaultAgentSlackAllowedUserIds = normalizeSlackUserIds(listFromEnv(process.env.HERMES_SLACK_ALLOWED_USERS));
 
 const slackLoadingMessages = (process.env.HERMES_SLACK_LOADING_MESSAGES || [
   "Reading the thread",
@@ -83,6 +85,8 @@ function defaultAgentRecord(existing = {}) {
     skills: defaultAgentSkills.length ? defaultAgentSkills : Array.isArray(existing.skills) ? existing.skills : [],
     mcpServers: defaultAgentMcpServers.length ? defaultAgentMcpServers : Array.isArray(existing.mcpServers) ? existing.mcpServers : [],
     secretRefs: defaultAgentSecretRefs.length ? defaultAgentSecretRefs : Array.isArray(existing.secretRefs) ? existing.secretRefs : [],
+    slackAllowedChannelIds: defaultAgentSlackAllowedChannelIds,
+    slackAllowedUserIds: defaultAgentSlackAllowedUserIds,
     createdAt: existing.createdAt || now(),
     updatedAt: existing.updatedAt || now()
   };
@@ -326,6 +330,8 @@ function createAgentRecord({ handle, name, description, instructions, model, cre
     skills: [],
     mcpServers: [],
     secretRefs: [],
+    slackAllowedChannelIds: [],
+    slackAllowedUserIds: [],
     createdBy: createdBy || null,
     createdAt: now(),
     updatedAt: now()
@@ -334,13 +340,13 @@ function createAgentRecord({ handle, name, description, instructions, model, cre
 
 function normalizeSlackChannelIds(values) {
   return Array.from(new Set((values || [])
-    .map((value) => String(value || "").trim())
+    .map((value) => String(value || "").trim().toUpperCase())
     .filter(Boolean)));
 }
 
 function normalizeSlackUserIds(values) {
   return Array.from(new Set((values || [])
-    .map((value) => String(value || "").trim())
+    .map((value) => String(value || "").trim().toUpperCase())
     .filter(Boolean)));
 }
 
@@ -357,7 +363,25 @@ function deployAgentToSlackChannels(agent, channelIds) {
 function agentCanRespondInSlackChannel(agent, channel, { isDirectMessage = false } = {}) {
   if (isDirectMessage || !SLACK_REQUIRE_CHANNEL_DEPLOYMENT) return true;
   const channelIds = normalizeSlackChannelIds(agent?.slackChannelIds || []);
-  return channelIds.includes(channel);
+  return channelIds.includes(String(channel || "").toUpperCase());
+}
+
+function slackChannelAccess(agent, channel, { isDirectMessage = false } = {}) {
+  const allowedChannelIds = normalizeSlackChannelIds(agent?.slackAllowedChannelIds || []);
+  if (allowedChannelIds.length) {
+    return {
+      allowed: allowedChannelIds.includes(String(channel || "").toUpperCase()),
+      reason: "access_policy"
+    };
+  }
+  if (agentCanRespondInSlackChannel(agent, channel, { isDirectMessage })) return { allowed: true, reason: null };
+  return { allowed: false, reason: "channel_deployment" };
+}
+
+function agentCanRespondToSlackUser(agent, userId) {
+  const allowedUserIds = normalizeSlackUserIds(agent?.slackAllowedUserIds || []);
+  if (!allowedUserIds.length) return true;
+  return allowedUserIds.includes(String(userId || "").toUpperCase());
 }
 
 function formatAgentList(state) {
@@ -884,6 +908,11 @@ async function handleAssistantThreadStarted(payload) {
   const thread = payload.event?.assistant_thread;
   if (!thread?.channel_id || !thread?.thread_ts) return;
   const teamId = payload.team_id || thread.context?.team_id || null;
+  const state = await loadState();
+  const agent = state.agents[defaultAgentId];
+  const isDirectMessage = thread.channel_id.startsWith("D");
+  if (!agentCanRespondToSlackUser(agent, thread.user_id)) return;
+  if (!slackChannelAccess(agent, thread.channel_id, { isDirectMessage }).allowed) return;
   await withState((state) => {
     ensureSlackThreadSession(state, {
       teamId,
@@ -916,6 +945,11 @@ async function handleAssistantThreadStarted(payload) {
 async function handleAssistantThreadContextChanged(payload) {
   const thread = payload.event?.assistant_thread;
   if (!thread?.channel_id || !thread?.thread_ts) return;
+  const state = await loadState();
+  const agent = state.agents[defaultAgentId];
+  const isDirectMessage = thread.channel_id.startsWith("D");
+  if (!agentCanRespondToSlackUser(agent, thread.user_id)) return;
+  if (!slackChannelAccess(agent, thread.channel_id, { isDirectMessage }).allowed) return;
   await withState((state) => {
     ensureSlackThreadSession(state, {
       teamId: payload.team_id || thread.context?.team_id,
@@ -985,7 +1019,11 @@ async function handleSlackUserMessage(payload) {
     agent = state.agents[defaultAgentId];
   }
 
-  if (!agentCanRespondInSlackChannel(agent, channel, { isDirectMessage })) {
+  if (!agentCanRespondToSlackUser(agent, event.user)) return;
+
+  const channelAccess = slackChannelAccess(agent, channel, { isDirectMessage });
+  if (!channelAccess.allowed) {
+    if (channelAccess.reason === "access_policy") return;
     await postSlackMessage({
       channel,
       threadTs,
@@ -2130,7 +2168,9 @@ async function handle(req, res) {
           installations: Object.keys(state.slack.installations || {}).length,
           dryRun: SLACK_DRY_RUN,
           createUsergroups: SLACK_CREATE_USERGROUPS,
-          requireChannelDeployment: SLACK_REQUIRE_CHANNEL_DEPLOYMENT
+          requireChannelDeployment: SLACK_REQUIRE_CHANNEL_DEPLOYMENT,
+          allowedChannels: defaultAgentSlackAllowedChannelIds,
+          allowedUsers: defaultAgentSlackAllowedUserIds
         }
       });
     }
@@ -2342,7 +2382,9 @@ async function handle(req, res) {
         mcpServers: Array.isArray(body.mcpServers) ? body.mcpServers : [],
         secretRefs: Array.isArray(body.secretRefs) ? body.secretRefs : [],
         slackChannelIds: normalizeSlackChannelIds(body.slackChannelIds || body.channelIds || []),
-        slackUserIds: normalizeSlackUserIds(body.slackUserIds || body.userIds || [])
+        slackUserIds: normalizeSlackUserIds(body.slackUserIds || body.userIds || []),
+        slackAllowedChannelIds: normalizeSlackChannelIds(body.slackAllowedChannelIds || body.allowedChannelIds || []),
+        slackAllowedUserIds: normalizeSlackUserIds(body.slackAllowedUserIds || body.allowedUserIds || [])
       };
       let savedAgent = await withState((state) => {
         state.agents[baseAgent.id] = baseAgent;
@@ -2392,12 +2434,18 @@ async function handle(req, res) {
       const slackTeamId = patch.slackTeamId || patch.teamId || null;
       if (patch.channelIds && !patch.slackChannelIds) patch.slackChannelIds = patch.channelIds;
       if (patch.userIds && !patch.slackUserIds) patch.slackUserIds = patch.userIds;
+      if (patch.allowedChannelIds && !patch.slackAllowedChannelIds) patch.slackAllowedChannelIds = patch.allowedChannelIds;
+      if (patch.allowedUserIds && !patch.slackAllowedUserIds) patch.slackAllowedUserIds = patch.allowedUserIds;
       if (patch.slackChannelIds) patch.slackChannelIds = normalizeSlackChannelIds(patch.slackChannelIds);
       if (patch.slackUserIds) patch.slackUserIds = normalizeSlackUserIds(patch.slackUserIds);
+      if (patch.slackAllowedChannelIds) patch.slackAllowedChannelIds = normalizeSlackChannelIds(patch.slackAllowedChannelIds);
+      if (patch.slackAllowedUserIds) patch.slackAllowedUserIds = normalizeSlackUserIds(patch.slackAllowedUserIds);
       delete patch.createSlackHandle;
       delete patch.teamId;
       delete patch.channelIds;
       delete patch.userIds;
+      delete patch.allowedChannelIds;
+      delete patch.allowedUserIds;
       await validateAgentPatch(patch);
       if (patch.handle) patch.handle = handleFromString(patch.handle);
 

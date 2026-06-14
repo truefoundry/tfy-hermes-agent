@@ -149,6 +149,22 @@ function normalizeSnapshot(value) {
   return { enabled: true, mlRepo, artifactName };
 }
 
+function uniqueUpperList(value, label) {
+  return Array.from(new Set(stringList(value, label).map((item) => item.toUpperCase())));
+}
+
+function normalizeSlackAccess(value) {
+  if (value == null) return { channels: [], users: [] };
+  assertObject(value, "slack");
+  const channels = uniqueUpperList(value.channels, "slack.channels");
+  const users = uniqueUpperList(value.users, "slack.users");
+  const invalidChannels = channels.filter((channel) => !/^[CGD][A-Z0-9]{2,}$/.test(channel));
+  const invalidUsers = users.filter((user) => !/^[UW][A-Z0-9]{2,}$/.test(user));
+  if (invalidChannels.length) throw new Error(`slack.channels must contain Slack channel IDs: ${invalidChannels.join(", ")}`);
+  if (invalidUsers.length) throw new Error(`slack.users must contain Slack user IDs: ${invalidUsers.join(", ")}`);
+  return { channels, users };
+}
+
 async function readHermesConfig(file) {
   if (!file) throw new Error("missing hermes.yaml path");
   const config = YAML.parse(await readFile(file, "utf8"));
@@ -167,6 +183,7 @@ async function readHermesConfig(file) {
   if (invalidSkills.length) throw new Error(`skills must be agent-skill FQNs: ${invalidSkills.join(", ")}`);
 
   const snapshot = normalizeSnapshot(config.snapshot);
+  const slack = normalizeSlackAccess(config.slack);
 
   return {
     name,
@@ -178,6 +195,7 @@ async function readHermesConfig(file) {
     model: String(config.model || DEFAULT_MODEL).trim(),
     secrets,
     snapshot,
+    slack,
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl)
   };
@@ -302,6 +320,8 @@ function controllerManifest(config) {
       HERMES_AGENT_SKILLS: csv(config.skills),
       HERMES_AGENT_MCP_SERVERS: csv(config.mcpServers),
       HERMES_AGENT_SECRET_REFS: "",
+      HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.channels),
+      HERMES_SLACK_ALLOWED_USERS: csv(config.slack.users),
       HARNESS_MODEL: config.model,
       HERMES_INFERENCE_MODEL: config.model,
       HERMES_JOB_APPLICATION_NAME: resource.executor,

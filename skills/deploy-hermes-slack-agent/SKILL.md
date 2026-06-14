@@ -35,6 +35,7 @@ where:
 - Tell the user to store secrets directly in the named TrueFoundry SecretGroup or in local environment variables.
 - Do not use Socket Mode.
 - Do not create Slack user groups. This flow is one Slack app per Hermes agent.
+- Ask whether Slack access should be restricted by channel IDs or user IDs. If the user does not provide either list, leave that dimension unrestricted.
 - Treat `hermes.yaml` as source of truth and generated manifests as derived output.
 - Treat generated `.hermes-rendered/*` manifests as disposable deploy output unless the user asks to commit them.
 - Do not deploy until validation passes or the user explicitly accepts a known limitation.
@@ -52,16 +53,18 @@ Maintain this state internally and progress in order. If a value is obvious from
 7. `skills`: list of skill FQNs, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`
 8. `mcp_servers`: list of MCP Gateway URLs
 9. `secrets`: per-agent SecretGroup name, default `<name>-hermes-secrets`
-10. `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
-11. `hermes.yaml`: written or updated in the user's project
-12. Slack app manifest: generated from `hermes.yaml`
-13. Slack app: manually created and installed by the user
-14. SecretGroup: manually filled by the user
-15. live validation: passed with TrueFoundry credentials
-16. deployment: compiled and applied
-17. health checks: service and Slack health reachable
-18. Slack URLs: Events API and Interactivity verified
-19. first message: real Slack mention receives a response
+10. `slack.channels`: optional Slack channel/group/DM ID allowlist; default unrestricted
+11. `slack.users`: optional Slack user ID allowlist; default unrestricted
+12. `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
+13. `hermes.yaml`: written or updated in the user's project
+14. Slack app manifest: generated from `hermes.yaml`
+15. Slack app: manually created and installed by the user
+16. SecretGroup: manually filled by the user
+17. live validation: passed with TrueFoundry credentials
+18. deployment: compiled and applied
+19. health checks: service and Slack health reachable
+20. Slack URLs: Events API and Interactivity verified
+21. first message: real Slack mention receives a response
 
 ## Architecture Rules Learned From Production
 
@@ -71,6 +74,7 @@ Maintain this state internally and progress in order. If a value is obvious from
   - `https://<host>/slack/interactions`
 - **OAuth is not required for one workspace / one app.** Users create/install the Slack app manually, then store `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` in the SecretGroup.
 - **Mention-only in channels.** In public/private channels and channel threads, the bot should run only on a direct mention. DMs may respond without mention.
+- **Slack access allowlists are optional.** If `slack.channels` is omitted or empty, the agent can respond in any Slack channel or DM where the app is present. If it is set, only those Slack channel/group/DM IDs can trigger it. If `slack.users` is omitted or empty, any Slack user can trigger it. If it is set, only those Slack user IDs can trigger it.
 - **Prompt layering is additive.** `hermes.yaml` instructions should append to Hermes' internal prompt through the executor, not replace `SOUL.md` and not get pasted into the user message as ordinary context.
 - **MCP servers are URLs only.** They must be reachable through the TrueFoundry MCP Gateway. The executor derives toolset names, writes Hermes MCP config, runs discovery synchronously, and passes those toolsets into oneshot.
 - **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The executor resolves presigned tarball URLs with `TFY_API_KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
@@ -142,12 +146,17 @@ Examples:
 - "Which TrueFoundry workspace FQN should this deploy to?"
 - "What public host should Slack call for this agent? I can infer it if `TFY_HOST`, `TFY_BASE_URL`, or `TFY_SECRET_TENANT` is set."
 - "What should this agent do? Give me the operating instructions, not just a title."
+- "Should this agent be restricted to specific Slack channels? Send Slack channel IDs like `C...` or say `all`."
+- "Should this agent be restricted to specific Slack users? Send Slack user IDs like `U...` or say `all`."
 
 When asking about optional lists:
 
 - For skills, accept `none`, an empty list, or full FQNs only.
 - For MCP servers, accept `none`, an empty list, or URLs reachable through MCP Gateway only.
+- For Slack channels, accept `all`, `none`, an empty list, or Slack IDs starting with `C`, `G`, or `D`.
+- For Slack users, accept `all`, `none`, an empty list, or Slack IDs starting with `U` or `W`.
 - If the user gives names instead of FQNs or URLs, pause and ask for the exact values or offer to look them up if tooling is available.
+- Only write the `slack` block when at least one allowlist is non-empty; otherwise omit it and rely on the default open Slack access.
 
 When all manifest fields are known, write or update `hermes.yaml`:
 
@@ -169,6 +178,13 @@ secrets: devrel-assistant-hermes-secrets
 snapshot:
   ml_repo: devrel-assistant
   artifact_name: devrel-assistant-state-snapshots
+
+# Optional. Omit this block when Slack access is unrestricted.
+slack:
+  channels:
+    - C0123456789
+  users:
+    - U0123456789
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1

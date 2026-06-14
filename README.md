@@ -266,6 +266,13 @@ snapshot:
   ml_repo: devrel-assistant
   artifact_name: devrel-assistant-state-snapshots
 
+# Optional. Omit this block or leave either list empty for unrestricted access.
+slack:
+  channels:
+    - C0123456789
+  users:
+    - U0123456789
+
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
   - agent-skill:tfy-eo/sai-mlrepo/event-follow-up:3
@@ -313,6 +320,12 @@ snapshots under `/data/snapshots` on the state volume. If set, `snapshot.ml_repo
 and `snapshot.artifact_name` are required and live validation checks that the ML
 Repo is visible before deployment.
 
+`slack` is optional. If omitted, the agent can respond anywhere the Slack app is
+installed and invited. If `slack.channels` is set, only those Slack channel,
+group, or DM IDs can trigger the agent. If `slack.users` is set, only those
+Slack user IDs can trigger the agent. Empty or omitted lists mean unrestricted
+for that dimension.
+
 At runtime, the generated executor makes the YAML entries operational before
 starting Hermes:
 
@@ -341,6 +354,8 @@ Compiler validation:
   fallback for non-TrueFoundry domains
 - validates skill entries as `agent-skill:<tenant>/<repo>/<name>:<version>` FQNs
 - validates MCP entries as URLs
+- validates Slack allowlist entries as Slack channel IDs and user IDs when
+  `slack.channels` or `slack.users` are set
 - with TrueFoundry credentials, checks deployment name collisions, required
   SecretGroup keys, MCP Gateway visibility, and configured snapshot ML Repo
   access
