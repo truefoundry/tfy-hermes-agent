@@ -222,7 +222,8 @@ export function volumeManifest(config) {
     name: resourceNames(config).volume,
     type: "volume",
     workspace_fqn: config.workspaceFqn,
-    config: { type: "dynamic", size: DEFAULT_VOLUME_SIZE_GI, access_modes: ["ReadWriteOnce"] }
+    size: `${DEFAULT_VOLUME_SIZE_GI}Gi`,
+    access_mode: "ReadWriteOnce"
   };
 }
 
@@ -591,6 +592,13 @@ async function runDeploy(file, flags) {
   if (flags["emit-manifests"]) {
     await emitManifestsToDir(items, flags["emit-manifests"]);
     console.log(`wrote ${items.length} manifest files to ${flags["emit-manifests"]}`);
+  }
+
+  // --skip-live-checks is the "preview offline" mode; never apply in that mode.
+  // Otherwise applying without live-validated workspace/secret state is dangerous.
+  if (flags["skip-live-checks"]) {
+    console.log("skip-live-checks set: manifests prepared but not applied. Review and run `tfy apply -f <file>` manually, or re-run without --skip-live-checks.");
+    return;
   }
 
   await applyManifests(items);
