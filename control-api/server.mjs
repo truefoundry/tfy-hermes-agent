@@ -589,6 +589,46 @@ function slackTitle(text) {
   return cleaned ? cleaned.slice(0, 80) : "Hermes conversation";
 }
 
+function slackTsToMs(ts) {
+  const value = Number(ts);
+  return Number.isFinite(value) ? Math.round(value * 1000) : null;
+}
+
+function isoToMs(value) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDurationMs(ms) {
+  if (!Number.isFinite(ms)) return "n/a";
+  const safeMs = Math.max(0, ms);
+  if (safeMs < 1000) return `${Math.round(safeMs)}ms`;
+  const seconds = safeMs / 1000;
+  return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+}
+
+function slackTaskDetails(lines) {
+  return `\n${lines.filter(Boolean).join("\n")}`;
+}
+
+function firstRunEventAt(run, predicate) {
+  const event = (run?.events || []).find(predicate);
+  return isoToMs(event?.createdAt);
+}
+
+function slackTimingDetails(timing, run, completedAt) {
+  const sentAt = timing.sentAt || timing.receivedAt;
+  const runnerStartedAt = firstRunEventAt(run, (event) => (
+    event.type === "runner_diagnostic" && String(event.text || "").includes("\"phase\":\"start\"")
+  ));
+  const firstOutputAt = firstRunEventAt(run, (event) => event.type === "stdout_delta" && event.text);
+  return slackTaskDetails([
+    `Runner started: ${runnerStartedAt ? formatDurationMs(runnerStartedAt - sentAt) : "n/a"} total`,
+    `First output: ${firstOutputAt ? formatDurationMs(firstOutputAt - sentAt) : "n/a"} total`,
+    `Completed: ${formatDurationMs(completedAt - sentAt)} total`
+  ]);
+}
+
 function chunkText(text, size = 3500) {
   const chunks = [];
   let remaining = String(text || "");
@@ -861,9 +901,12 @@ async function handleAssistantThreadContextChanged(payload) {
 }
 
 async function handleSlackUserMessage(payload) {
+  const receivedAt = Date.now();
   const event = payload.event || {};
   if (event.bot_id || event.subtype || !event.channel || !event.user) return;
   const teamId = payload.team_id || event.team;
+  const sentAt = slackTsToMs(event.ts) || receivedAt;
+  const timing = { sentAt, receivedAt };
   const state = await loadState();
   const installation = teamId ? state.slack.installations?.[teamId] : null;
   if (installation?.botUserId && event.user === installation.botUserId) return;
@@ -948,8 +991,11 @@ async function handleSlackUserMessage(payload) {
       title: `${agentLabel(agent)} ${slackTitle(text)}`.slice(0, 80)
     }, { teamId }).catch(() => {});
     await setSlackStatus({ channel, threadTs, teamId });
+    const streamStartAt = Date.now();
     stream = await startSlackStream({ channel, threadTs, teamId, userId: event.user, agent });
+    timing.streamOpenedAt = Date.now();
 
+    const runTriggerStartAt = Date.now();
     const { run } = await createRun({
       sessionId: thread.sessionId,
       agentId: agent.id,
@@ -968,6 +1014,7 @@ async function handleSlackUserMessage(payload) {
         }
       }
     });
+    timing.runTriggeredAt = Date.now();
 
     await appendSlackStream({
       channel,
@@ -979,7 +1026,11 @@ async function handleSlackUserMessage(payload) {
           id: "hermes_turn",
           title: `Run ${agentLabel(agent)}`,
           status: "in_progress",
-          details: `Started run ${run.id}`
+          details: slackTaskDetails([
+            `Slack delivery: ${formatDurationMs(receivedAt - sentAt)}`,
+            `Stream opened: ${formatDurationMs(timing.streamOpenedAt - streamStartAt)} (${formatDurationMs(timing.streamOpenedAt - sentAt)} total)`,
+            `Run triggered: ${formatDurationMs(timing.runTriggeredAt - runTriggerStartAt)} (${formatDurationMs(timing.runTriggeredAt - sentAt)} total)`
+          ])
         }
       ]
     });
@@ -997,7 +1048,7 @@ async function handleSlackUserMessage(payload) {
             id: "hermes_turn",
             title: `Run ${agentLabel(agent)}`,
             status: "error",
-            details: errorMessage.slice(0, 256)
+            details: slackTaskDetails([`Failed: ${errorMessage.slice(0, 256)}`])
           }
         ]
       });
@@ -1013,6 +1064,15 @@ async function handleSlackUserMessage(payload) {
     }
 
     const output = String(streamed.run.result || "").trim() || "Hermes finished, but returned no text.";
+    const alreadyStreamed = streamed.streamedText.trim();
+    const finalRemainder = alreadyStreamed && output.startsWith(alreadyStreamed)
+      ? output.slice(alreadyStreamed.length).trimStart()
+      : alreadyStreamed ? "" : output;
+    for (const chunk of chunkText(finalRemainder)) {
+      await appendSlackStream({ channel, ts: stream.ts, markdownText: chunk, teamId });
+      if (SLACK_STREAM_CHUNK_DELAY_MS > 0) await sleep(SLACK_STREAM_CHUNK_DELAY_MS);
+    }
+    const completedAt = Date.now();
     await appendSlackStream({
       channel,
       ts: stream.ts,
@@ -1023,18 +1083,10 @@ async function handleSlackUserMessage(payload) {
           id: "hermes_turn",
           title: `Run ${agentLabel(agent)}`,
           status: "complete",
-          details: "Response ready"
+          details: slackTimingDetails(timing, streamed.run, completedAt)
         }
       ]
     });
-    const alreadyStreamed = streamed.streamedText.trim();
-    const finalRemainder = alreadyStreamed && output.startsWith(alreadyStreamed)
-      ? output.slice(alreadyStreamed.length).trimStart()
-      : alreadyStreamed ? "" : output;
-    for (const chunk of chunkText(finalRemainder)) {
-      await appendSlackStream({ channel, ts: stream.ts, markdownText: chunk, teamId });
-      if (SLACK_STREAM_CHUNK_DELAY_MS > 0) await sleep(SLACK_STREAM_CHUNK_DELAY_MS);
-    }
     await stopSlackStream({
       channel,
       ts: stream.ts,
