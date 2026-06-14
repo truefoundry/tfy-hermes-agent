@@ -8,7 +8,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm ripgrep && \
     rm -rf /var/lib/apt/lists/* && \
     python -m pip install --no-cache-dir --upgrade pip && \
-    python -m pip install --no-cache-dir "hermes-agent[mcp]==0.15.1"
+    python -m pip install --no-cache-dir "hermes-agent[mcp]==0.16.0"
 
 WORKDIR /opt/tfy-hermes-agent
 COPY package.json ./
