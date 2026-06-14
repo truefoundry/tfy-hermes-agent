@@ -132,6 +132,11 @@ messages in Slack threads. The adapter sets the thread title, shows a Slack
 assistant loading status, starts a streamed reply with a task card, appends the
 Hermes response, and finishes with feedback controls.
 
+This integration does not use Socket Mode or hosted WebSockets. TrueFoundry
+services receive Slack Events API callbacks over HTTP, then stream the visible
+Slack reply by making outbound HTTPS calls to Slack's `chat.startStream`,
+`chat.appendStream`, and `chat.stopStream` Web API methods.
+
 Example:
 
 ```text
