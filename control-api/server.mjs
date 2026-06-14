@@ -96,6 +96,7 @@ function normalizeState(state) {
   state.slack ||= {};
   state.slack.threads ||= {};
   state.slack.events ||= {};
+  state.slack.messages ||= {};
   state.slack.feedback ||= {};
   state.slack.userAgents ||= {};
   state.slack.usergroups ||= {};
@@ -121,6 +122,7 @@ async function loadState() {
       slack: {
         threads: {},
         events: {},
+        messages: {},
         feedback: {},
         userAgents: {},
         usergroups: {},
@@ -556,6 +558,21 @@ async function claimSlackEvent(eventId) {
   });
 }
 
+function slackMessageClaimKey({ teamId, channel, ts, userId }) {
+  return [teamId || "unknown-team", channel, ts, userId || "unknown-user"].join(":");
+}
+
+async function claimSlackMessage({ teamId, channel, ts, userId }) {
+  if (!channel || !ts) return true;
+  const key = slackMessageClaimKey({ teamId, channel, ts, userId });
+  return withState((state) => {
+    if (state.slack.messages[key]) return false;
+    state.slack.messages[key] = now();
+    pruneSlackEvents(state.slack.messages);
+    return true;
+  });
+}
+
 function cleanSlackText(text) {
   return String(text || "")
     .replace(/<@[A-Z0-9]+>/g, "")
@@ -857,6 +874,13 @@ async function handleSlackUserMessage(payload) {
     });
     return;
   }
+  const claimedMessage = await claimSlackMessage({
+    teamId,
+    channel,
+    ts: event.ts,
+    userId: event.user
+  });
+  if (!claimedMessage) return;
 
   const userDefaultAgentId = state.slack.userAgents[event.user] || null;
   let agent = null;
