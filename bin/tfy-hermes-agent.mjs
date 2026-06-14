@@ -143,7 +143,7 @@ function names(config) {
     secretGroup: config.secrets,
     volume: `${config.name}-hermes-state`,
     api: `${config.name}-hermes-api`,
-    job: `${config.name}-hermes-turn-runner`
+    job: `${config.name}-hermes-runner`
   };
 }
 
@@ -163,14 +163,16 @@ function controlPlaneUrl(config) {
   return baseTfyUrl() || `https://${config.tenant}.truefoundry.cloud`;
 }
 
-function image(dockerfilePath) {
-  return {
+function image(dockerfilePath, command) {
+  const sourceRef = process.env.HERMES_SOURCE_REF || DEFAULT_SOURCE_REF;
+  const sourceBranch = process.env.HERMES_SOURCE_BRANCH || sourceRef;
+  const manifest = {
     type: "build",
     build_source: {
       type: "git",
       repo_url: process.env.HERMES_REPO_URL || DEFAULT_REPO_URL,
-      branch_name: "main",
-      ref: process.env.HERMES_SOURCE_REF || DEFAULT_SOURCE_REF
+      branch_name: sourceBranch,
+      ref: sourceRef
     },
     build_spec: {
       type: "dockerfile",
@@ -178,6 +180,8 @@ function image(dockerfilePath) {
       build_context_path: "."
     }
   };
+  if (command) manifest.build_spec.command = command;
+  return manifest;
 }
 
 function secretGroupManifest(config) {
@@ -202,8 +206,11 @@ function volumeManifest(config) {
     name: names(config).volume,
     type: "volume",
     workspace_fqn: config.workspaceFqn,
-    size: "20Gi",
-    access_mode: "ReadWriteOnce"
+    config: {
+      type: "dynamic",
+      size: 20,
+      storage_class: "managed-csi-premium"
+    }
   };
 }
 
@@ -265,7 +272,7 @@ function apiManifest(config) {
       HARNESS_SANDBOX_SCOPE: "agent-session",
       HARNESS_SANDBOX_IDLE_TIMEOUT_SECONDS: "900"
     },
-    ports: [{ port: 8787, expose: true, host: config.host.hostname, app_protocol: "http" }],
+    ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.volume}` }],
     liveness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
     readiness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
@@ -281,9 +288,9 @@ function runnerManifest(config) {
     trigger: { type: "manual" },
     concurrency_limit: 20,
     retries: 0,
-    image: image("Dockerfile.turn-runner"),
+    image: image("Dockerfile.turn-runner", "node runner/turn-runner.mjs"),
     resources: {
-      cpu_request: 0.5,
+      cpu_request: 0.1,
       cpu_limit: 2,
       memory_request: 2048,
       memory_limit: 4096,
@@ -381,10 +388,10 @@ function slackManifest(config) {
 
 function allManifests(config) {
   return {
-    "secret-group.scaffold.yaml": secretGroupManifest(config),
-    "volume.yaml": volumeManifest(config),
-    "api-service.yaml": apiManifest(config),
-    "turn-runner-job.yaml": runnerManifest(config),
+    [`${config.name}-secret-group.scaffold.yaml`]: secretGroupManifest(config),
+    [`${config.name}-volume.yaml`]: volumeManifest(config),
+    [`${config.name}-api-service.yaml`]: apiManifest(config),
+    [`${config.name}-turn-runner-job.yaml`]: runnerManifest(config),
     "slack-app-manifest.json": slackManifest(config)
   };
 }
@@ -467,6 +474,7 @@ async function checkSecretGroup(config) {
 
 function collectUrls(value, urls = new Set()) {
   if (typeof value === "string") {
+    if (value.includes("{{mcpProxyBaseURL}}")) urls.add(value.replace("{{mcpProxyBaseURL}}", "https://gateway.truefoundry.ai").replace(/\/$/, ""));
     try {
       const parsed = new URL(value);
       if (["http:", "https:"].includes(parsed.protocol)) urls.add(parsed.toString().replace(/\/$/, ""));

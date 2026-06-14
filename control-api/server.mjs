@@ -1396,7 +1396,7 @@ async function triggerJob(runId) {
   const payload = {
     deploymentId,
     input: {
-      command: `HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(PUBLIC_BASE_URL)} node runner/turn-runner.mjs`
+      command: `sh -lc ${shellQuote(`HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(PUBLIC_BASE_URL)} node runner/turn-runner.mjs`)}`
     },
     metadata: {
       job_run_name_alias: runId
