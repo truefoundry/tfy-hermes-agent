@@ -44,22 +44,8 @@ async function postJson(apiPath, body) {
 }
 
 function buildPrompt(work) {
-  const agent = work.agent || {};
-  const identity = [
-    agent.name ? `Agent name: ${agent.name}` : "",
-    agent.handle ? `Slack handle: @${agent.handle}` : "",
-    agent.description ? `Description: ${agent.description}` : "",
-    agent.instructions ? `Instructions:\n${agent.instructions}` : ""
-  ].filter(Boolean).join("\n");
   const memory = work.memory ? `Conversation so far:\n${work.memory}\n\n` : "";
-  const skills = Array.isArray(work.agent?.skills) && work.agent.skills.length
-    ? `Allowed skills: ${work.agent.skills.join(", ")}\n`
-    : "";
-  const mcp = Array.isArray(work.agent?.mcpServers) && work.agent.mcpServers.length
-    ? `Allowed MCP servers: ${work.agent.mcpServers.join(", ")}\n`
-    : "";
-  const preamble = identity ? `${identity}\n\n` : "";
-  return `${preamble}${skills}${mcp}${memory}User: ${work.content}`;
+  return `${memory}User message:\n${work.content}`;
 }
 
 function redact(text) {
@@ -126,6 +112,28 @@ function mcpToolsetNames(servers) {
     seen.set(baseName, count + 1);
     return count ? `${baseName}-${count + 1}` : baseName;
   }).filter(Boolean);
+}
+
+function bulletList(values) {
+  return (values || [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .map((value) => `- ${value}`)
+    .join("\n");
+}
+
+function buildManifestSystemPrompt(work) {
+  const agent = work.agent || {};
+  const blocks = [
+    "Additional instructions from hermes.yaml:",
+    agent.name ? `Agent name: ${agent.name}` : "",
+    agent.handle ? `Slack handle: @${agent.handle}` : "",
+    agent.description ? `Description: ${agent.description}` : "",
+    String(agent.instructions || "").trim() ? `Instructions:\n${String(agent.instructions).trim()}` : "",
+    Array.isArray(agent.skills) && agent.skills.length ? `Configured skill FQNs:\n${bulletList(agent.skills)}` : "",
+    Array.isArray(agent.mcpServers) && agent.mcpServers.length ? `Configured MCP servers:\n${bulletList(agent.mcpServers)}` : ""
+  ].filter(Boolean);
+  return `${blocks.join("\n\n")}\n`;
 }
 
 function skillNameFromFqn(fqn, fallback) {
@@ -210,6 +218,8 @@ async function writeHermesConfig(env, model, work) {
   const home = env.HERMES_HOME || path.join(env.HOME || process.cwd(), ".hermes");
   await mkdir(home, { recursive: true });
   await writeHermesObserverPlugin(home);
+  const manifestSystemPrompt = buildManifestSystemPrompt(work);
+  env.HERMES_EPHEMERAL_SYSTEM_PROMPT = manifestSystemPrompt;
   const config = [
     "model:",
     `  default: ${yamlString(model)}`,
@@ -228,7 +238,7 @@ async function writeHermesConfig(env, model, work) {
     ""
   ].join("\n");
   await writeFile(path.join(home, "config.yaml"), config, { mode: 0o600 });
-  return home;
+  return { home, manifestSystemPrompt };
 }
 
 async function writeHermesObserverPlugin(home) {
@@ -419,20 +429,43 @@ async function runHermes(prompt, work) {
   if (model) env.HERMES_INFERENCE_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
-  const hermesHome = await writeHermesConfig(env, model, work);
+  const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
   const installedSkills = await installAgentSkills(env, work.agent?.skills);
 
   const promptPath = path.join(hermesHome, `prompt-${runId}.txt`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
   await writeFile(promptPath, prompt, { mode: 0o600 });
   await writeFile(wrapperPath, String.raw`
+import os
 import sys
 
 from hermes_cli.config import load_config
 from hermes_cli.oneshot import run_oneshot
 
 
+def _append_manifest_system_prompt():
+    prompt = (os.environ.get("HERMES_EPHEMERAL_SYSTEM_PROMPT") or "").strip()
+    if not prompt:
+        return
+    try:
+        import run_agent
+    except Exception:
+        return
+    original = run_agent.AIAgent
+
+    class ManifestPromptAIAgent(original):
+        def __init__(self, *args, **kwargs):
+            existing = kwargs.get("ephemeral_system_prompt")
+            kwargs["ephemeral_system_prompt"] = "\n\n".join(
+                part for part in [existing, prompt] if part
+            )
+            super().__init__(*args, **kwargs)
+
+    run_agent.AIAgent = ManifestPromptAIAgent
+
+
 def _startup():
+    _append_manifest_system_prompt()
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
@@ -473,6 +506,8 @@ if __name__ == "__main__":
       toolsets,
       skillCount: Array.isArray(work.agent?.skills) ? work.agent.skills.length : 0,
       installedSkills: installedSkills.map((skill) => skill.name),
+      manifestSystemPromptConfigured: Boolean(manifestSystemPrompt.trim()),
+      manifestSystemPromptChars: manifestSystemPrompt.length,
       openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
       openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY),
       hermesHomeConfigured: Boolean(hermesHome)

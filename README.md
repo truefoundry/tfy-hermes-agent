@@ -290,6 +290,9 @@ an authenticated gateway.
 At runtime, the generated turn-runner makes the YAML entries operational before
 starting Hermes:
 
+- `name`, `description`, and `instructions` are appended to Hermes' internal
+  prompt as an ephemeral system prompt, so the manifest adds personality without
+  replacing Hermes' native identity or safety/tooling guidance.
 - `skills` FQNs are resolved through TrueFoundry's agent-skill-version API,
   downloaded as skill tarballs, and extracted into `$HERMES_HOME/skills`.
 - `mcp_servers` URLs are written into Hermes `config.yaml`, discovered
