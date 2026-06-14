@@ -1,0 +1,35 @@
+name: devrel-assistant
+
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+
+description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
+
+instructions: |
+  You are the DevRel assistant. Be concise, operational, and evidence-driven.
+  Prefer concrete next steps, cite available context, and call out missing inputs.
+
+model: openai-main/gpt-5.5
+
+gateway_url: https://your-openai-compatible-gateway/v1
+
+secrets: devrel-assistant-hermes-secrets
+
+snapshot:
+  ml_repo: devrel-assistant
+  artifact_name: devrel-assistant-state-snapshots
+
+# Optional. Omit this block or leave either list empty for unrestricted access.
+slack:
+  channels:
+    - C0123456789
+  users:
+    - U0123456789
+
+skills:
+  - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
+  - agent-skill:tfy-eo/sai-mlrepo/event-follow-up:3
+
+mcp_servers:
+  - https://mcp-gateway.example.com/servers/posthog
+  - https://mcp-gateway.example.com/servers/linear
+  - https://mcp-gateway.example.com/servers/slack

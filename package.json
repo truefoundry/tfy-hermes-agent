@@ -1,13 +1,34 @@
 {
   "name": "@truefoundry/tfy-hermes-agent",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Standalone TrueFoundry Hermes agent deployment compiler and runtime",
   "type": "module",
+  "bin": {
+    "tfy-hermes-agent": "bin/tfy-hermes-agent.mjs"
+  },
+  "files": [
+    "AGENTS.md",
+    "Dockerfile.controller",
+    "Dockerfile.executor",
+    "Dockerfile.snapshotter",
+    "bin/tfy-hermes-agent.mjs",
+    "controller/controller.mjs",
+    "examples/agent.hermes.yaml",
+    "executor/executor.mjs",
+    "skills/",
+    "snapshotter/snapshotter.py"
+  ],
   "scripts": {
-    "start": "node control-api/server.mjs",
-    "job": "node runner/turn-runner.mjs",
-    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs"
+    "start": "node controller/controller.mjs",
+    "executor": "node executor/executor.mjs",
+    "snapshot": "python3 snapshotter/snapshotter.py",
+    "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs",
+    "check": "node --check controller/controller.mjs && node --check executor/executor.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && python3 -m py_compile snapshotter/snapshotter.py && npm test"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }
