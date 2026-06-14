@@ -589,16 +589,6 @@ function slackTitle(text) {
   return cleaned ? cleaned.slice(0, 80) : "Hermes conversation";
 }
 
-function slackTsToMs(ts) {
-  const value = Number(ts);
-  return Number.isFinite(value) ? Math.round(value * 1000) : null;
-}
-
-function isoToMs(value) {
-  const parsed = Date.parse(value || "");
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function formatDurationMs(ms) {
   if (!Number.isFinite(ms)) return "n/a";
   const safeMs = Math.max(0, ms);
@@ -611,22 +601,60 @@ function slackTaskDetails(lines) {
   return `\n${lines.filter(Boolean).join("\n")}`;
 }
 
-function firstRunEventAt(run, predicate) {
-  const event = (run?.events || []).find(predicate);
-  return isoToMs(event?.createdAt);
+function parseRunEventJson(event) {
+  try {
+    return JSON.parse(event?.text || "{}");
+  } catch {
+    return null;
+  }
 }
 
-function slackTimingDetails(timing, run, completedAt) {
-  const sentAt = timing.sentAt || timing.receivedAt;
-  const runnerStartedAt = firstRunEventAt(run, (event) => (
-    event.type === "runner_diagnostic" && String(event.text || "").includes("\"phase\":\"start\"")
-  ));
-  const firstOutputAt = firstRunEventAt(run, (event) => event.type === "stdout_delta" && event.text);
-  return slackTaskDetails([
-    `Runner started: ${runnerStartedAt ? formatDurationMs(runnerStartedAt - sentAt) : "n/a"} total`,
-    `First output: ${firstOutputAt ? formatDurationMs(firstOutputAt - sentAt) : "n/a"} total`,
-    `Completed: ${formatDurationMs(completedAt - sentAt)} total`
-  ]);
+function formatToolArgs(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  const keys = Object.keys(args).filter((key) => args[key] !== undefined).slice(0, 4);
+  if (!keys.length) return "";
+  const parts = keys.map((key) => {
+    const value = args[key];
+    if (value === null) return key;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return `${key}: ${String(value).slice(0, 80)}`;
+    }
+    if (Array.isArray(value)) return `${key}: ${value.length} items`;
+    if (typeof value === "object") return `${key}: ${Object.keys(value).length} fields`;
+    return key;
+  });
+  return ` (${parts.join(", ")})`;
+}
+
+function formatObserverProgress(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const duration = Number.isFinite(Number(payload.duration_ms))
+    ? ` in ${formatDurationMs(Number(payload.duration_ms))}`
+    : "";
+  switch (payload.kind) {
+    case "model_request_start":
+      return `Model request started${payload.model ? `: ${payload.model}` : ""}`;
+    case "model_request_complete": {
+      const tools = Number(payload.assistant_tool_call_count || 0);
+      const suffix = tools ? `, ${tools} tool call${tools === 1 ? "" : "s"} planned` : "";
+      return `Model request finished${duration}${suffix}`;
+    }
+    case "model_request_error":
+      return `Model request failed${duration}: ${payload.error_message || payload.reason || "unknown error"}`;
+    case "tool_start":
+      return `Calling tool: ${payload.tool_name || "unknown"}${formatToolArgs(payload.args)}`;
+    case "tool_complete": {
+      const status = payload.status || "done";
+      const error = payload.error_message ? `: ${payload.error_message}` : "";
+      return `Tool finished: ${payload.tool_name || "unknown"} (${status})${duration}${error}`;
+    }
+    case "subagent_start":
+      return `Subagent started${payload.child_role ? `: ${payload.child_role}` : ""}${payload.child_goal ? ` - ${payload.child_goal}` : ""}`;
+    case "subagent_stop":
+      return `Subagent finished${payload.child_role ? `: ${payload.child_role}` : ""}${duration}`;
+    default:
+      return null;
+  }
 }
 
 function chunkText(text, size = 3500) {
@@ -900,12 +928,9 @@ async function handleAssistantThreadContextChanged(payload) {
 }
 
 async function handleSlackUserMessage(payload) {
-  const receivedAt = Date.now();
   const event = payload.event || {};
   if (event.bot_id || event.subtype || !event.channel || !event.user) return;
   const teamId = payload.team_id || event.team;
-  const sentAt = slackTsToMs(event.ts) || receivedAt;
-  const timing = { sentAt, receivedAt };
   const state = await loadState();
   const installation = teamId ? state.slack.installations?.[teamId] : null;
   if (installation?.botUserId && event.user === installation.botUserId) return;
@@ -990,11 +1015,8 @@ async function handleSlackUserMessage(payload) {
       title: `${agentLabel(agent)} ${slackTitle(text)}`.slice(0, 80)
     }, { teamId }).catch(() => {});
     await setSlackStatus({ channel, threadTs, teamId });
-    const streamStartAt = Date.now();
     stream = await startSlackStream({ channel, threadTs, teamId, userId: event.user, agent });
-    timing.streamOpenedAt = Date.now();
 
-    const runTriggerStartAt = Date.now();
     const { run } = await createRun({
       sessionId: thread.sessionId,
       agentId: agent.id,
@@ -1013,7 +1035,6 @@ async function handleSlackUserMessage(payload) {
         }
       }
     });
-    timing.runTriggeredAt = Date.now();
 
     await appendSlackStream({
       channel,
@@ -1026,9 +1047,9 @@ async function handleSlackUserMessage(payload) {
           title: `Run ${agentLabel(agent)}`,
           status: "in_progress",
           details: slackTaskDetails([
-            `Request received: ${formatDurationMs(receivedAt - sentAt)} after send`,
-            `Stream opened: ${formatDurationMs(timing.streamOpenedAt - streamStartAt)} (${formatDurationMs(timing.streamOpenedAt - sentAt)} total)`,
-            `Runner job queued: ${formatDurationMs(timing.runTriggeredAt - runTriggerStartAt)} (${formatDurationMs(timing.runTriggeredAt - sentAt)} total)`
+            "Request received",
+            "Slack stream opened",
+            "Runner job queued"
           ])
         }
       ]
@@ -1071,7 +1092,6 @@ async function handleSlackUserMessage(payload) {
       await appendSlackStream({ channel, ts: stream.ts, markdownText: chunk, teamId });
       if (SLACK_STREAM_CHUNK_DELAY_MS > 0) await sleep(SLACK_STREAM_CHUNK_DELAY_MS);
     }
-    const completedAt = Date.now();
     await appendSlackStream({
       channel,
       ts: stream.ts,
@@ -1082,7 +1102,9 @@ async function handleSlackUserMessage(payload) {
           id: "hermes_turn",
           title: `Run ${agentLabel(agent)}`,
           status: "complete",
-          details: slackTimingDetails(timing, streamed.run, completedAt)
+          details: streamed.progressCount
+            ? slackTaskDetails(["Completed"])
+            : slackTaskDetails(["Completed; no Hermes tool events emitted"])
         }
       ]
     });
@@ -1612,13 +1634,11 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
   const deadline = Date.now() + timeoutMs;
   let eventOffset = 0;
   let streamedText = "";
+  let progressCount = 0;
   let state = await loadState();
   let run = state.runs[runId];
 
-  while (run && !isRunTerminal(run.status) && Date.now() < deadline && !isAborted()) {
-    const events = Array.isArray(run.events) ? run.events : [];
-    const newEvents = events.slice(eventOffset);
-    eventOffset = events.length;
+  async function processEvents(newEvents) {
     const output = newEvents
       .filter((event) => event.type === "stdout_delta" && event.text)
       .map((event) => event.text)
@@ -1633,6 +1653,37 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
         }
       }
     }
+    for (const event of newEvents) {
+      if (event.type !== "hermes_observer") continue;
+      const line = formatObserverProgress(parseRunEventJson(event));
+      if (!line) continue;
+      progressCount += 1;
+      try {
+        await appendSlackStream({
+          channel,
+          ts,
+          teamId,
+          chunks: [
+            {
+              type: "task_update",
+              id: "hermes_turn",
+              title: "Hermes activity",
+              status: "in_progress",
+              details: slackTaskDetails([line])
+            }
+          ]
+        });
+      } catch (error) {
+        console.error(`appendSlackStream progress failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  while (run && !isRunTerminal(run.status) && Date.now() < deadline && !isAborted()) {
+    const events = Array.isArray(run.events) ? run.events : [];
+    const newEvents = events.slice(eventOffset);
+    eventOffset = events.length;
+    await processEvents(newEvents);
     await sleep(OPENAI_POLL_INTERVAL_MS);
     state = await loadState();
     run = state.runs[runId];
@@ -1641,23 +1692,10 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
   if (run && !isAborted()) {
     const events = Array.isArray(run.events) ? run.events : [];
     const newEvents = events.slice(eventOffset);
-    const output = newEvents
-      .filter((event) => event.type === "stdout_delta" && event.text)
-      .map((event) => event.text)
-      .join("");
-    if (output) {
-      streamedText += output;
-      for (const chunk of chunkText(output)) {
-        try {
-          await appendSlackStream({ channel, ts, markdownText: chunk, teamId });
-        } catch (error) {
-          console.error(`appendSlackStream failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
+    await processEvents(newEvents);
   }
 
-  return { run, streamedText, aborted: isAborted() };
+  return { run, streamedText, progressCount, aborted: isAborted() };
 }
 
 async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelta, isAborted = () => false }) {
