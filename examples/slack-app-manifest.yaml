@@ -15,7 +15,7 @@ features:
         message: Review the visible context and call out risks or missing information.
   bot_user:
     display_name: your-agent-handle
-    always_online: false
+    always_online: true
 oauth_config:
   scopes:
     bot:

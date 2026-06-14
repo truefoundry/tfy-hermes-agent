@@ -343,7 +343,7 @@ function slackManifest(config) {
           { title: "Review recent context", message: "Review the visible context and call out risks or missing information." }
         ]
       },
-      bot_user: { display_name: config.name, always_online: false }
+      bot_user: { display_name: config.name, always_online: true }
     },
     oauth_config: {
       scopes: {
