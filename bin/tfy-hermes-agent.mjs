@@ -164,15 +164,15 @@ function uniqueUpperList(value, label) {
 }
 
 function normalizeSlackAccess(value) {
-  if (value == null) return { channels: [], users: [] };
+  if (value == null) return { allowedChannels: [], allowedUsers: [] };
   assertObject(value, "slack");
-  const channels = uniqueUpperList(value.channels, "slack.channels");
-  const users = uniqueUpperList(value.users, "slack.users");
-  const invalidChannels = channels.filter((channel) => !/^[CGD][A-Z0-9]{2,}$/.test(channel));
-  const invalidUsers = users.filter((user) => !/^[UW][A-Z0-9]{2,}$/.test(user));
-  if (invalidChannels.length) throw new Error(`slack.channels must contain Slack channel IDs: ${invalidChannels.join(", ")}`);
-  if (invalidUsers.length) throw new Error(`slack.users must contain Slack user IDs: ${invalidUsers.join(", ")}`);
-  return { channels, users };
+  const allowedChannels = uniqueUpperList(value.allowed_channels, "slack.allowed_channels");
+  const allowedUsers = uniqueUpperList(value.allowed_users, "slack.allowed_users");
+  const invalidChannels = allowedChannels.filter((channel) => !/^[CGD][A-Z0-9]{2,}$/.test(channel));
+  const invalidUsers = allowedUsers.filter((user) => !/^[UW][A-Z0-9]{2,}$/.test(user));
+  if (invalidChannels.length) throw new Error(`slack.allowed_channels must contain Slack channel IDs: ${invalidChannels.join(", ")}`);
+  if (invalidUsers.length) throw new Error(`slack.allowed_users must contain Slack user IDs: ${invalidUsers.join(", ")}`);
+  return { allowedChannels, allowedUsers };
 }
 
 async function readHermesConfig(file) {
@@ -318,8 +318,8 @@ function controllerManifest(config) {
       HERMES_AGENT_INSTRUCTIONS: config.instructions,
       HERMES_AGENT_SKILLS: csv(config.skills),
       HERMES_AGENT_MCP_SERVERS: csv(config.mcpServers),
-      HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.channels),
-      HERMES_SLACK_ALLOWED_USERS: csv(config.slack.users),
+      HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.allowedChannels),
+      HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_MODEL: config.model,
       HERMES_EXECUTOR_NAME: resource.executor
     },

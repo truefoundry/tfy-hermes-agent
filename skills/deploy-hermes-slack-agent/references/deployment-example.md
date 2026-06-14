@@ -55,10 +55,11 @@ snapshot:
   artifact_name: devrel-assistant-state-snapshots
 
 # Optional. Omit this block when Slack access is unrestricted.
+# Defaults: open to all users and all channels when this block is absent.
 slack:
-  channels:
+  allowed_channels:
     - C0123456789
-  users:
+  allowed_users:
     - U0123456789
 
 skills: []
@@ -98,9 +99,10 @@ Do not ask the user to generate or paste it into chat.
 Do not use Socket Mode. Do not create Slack user groups. The Slack app manifest
 is generated at `<agent-name>/slack-app-manifest.json`.
 
-If `slack` is omitted, Slack access is open anywhere the app is installed and
-invited. If `slack.channels` is set, only those channel/group/DM IDs can trigger
-the agent. If `slack.users` is set, only those user IDs can trigger the agent.
+If `slack` is omitted, Slack access is open: any user and any channel where the
+app is installed and invited can trigger the agent. If `slack.allowed_channels`
+is set, only those channel/group/DM IDs can trigger the agent. If
+`slack.allowed_users` is set, only those user IDs can trigger the agent.
 
 ## Deployment
 

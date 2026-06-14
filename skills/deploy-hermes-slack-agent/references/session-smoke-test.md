@@ -72,8 +72,9 @@ While they test, monitor API/run logs and confirm:
 - Hermes activity appears
 - final answer posts in the Slack thread
 
-If `slack.channels` or `slack.users` is configured in `hermes.yaml`, also test
-one denied channel or user path before declaring the allowlist healthy.
+If `slack.allowed_channels` or `slack.allowed_users` is configured in
+`hermes.yaml`, also test one denied channel or user path before declaring the
+allowlist healthy.
 
 If the agent responds without a mention in a channel, fix routing before
 declaring success.
