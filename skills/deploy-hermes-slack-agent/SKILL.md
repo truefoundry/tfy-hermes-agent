@@ -125,7 +125,7 @@ npx @truefoundry/tfy-hermes-agent compile hermes.yaml
 
 Then stop and give exactly one manual task:
 
-"Create or update the TrueFoundry SecretGroup named `<secrets>` and add these keys: `TFY-GATEWAY-BASE-URL`, `TFY-GATEWAY-API-KEY`, `SLACK-BOT-TOKEN`, and `SLACK-SIGNING-SECRET`. Put the values in TrueFoundry directly, not in chat. Tell me when the SecretGroup is ready."
+"Create or update the TrueFoundry SecretGroup named `<secrets>` and add these keys: `TFY-GATEWAY-BASE-URL`, `TFY-GATEWAY-API-KEY`, `TFY-PLATFORM-API-KEY`, `HARNESS-INTERNAL-TOKEN`, `HERMES-OPENAI-API-KEY`, `SLACK-BOT-TOKEN`, and `SLACK-SIGNING-SECRET`. Put the values in TrueFoundry directly, not in chat. Generate `HARNESS-INTERNAL-TOKEN` and `HERMES-OPENAI-API-KEY` locally as long random strings (for example `openssl rand -hex 32`) and paste them straight into the TrueFoundry UI. `TFY-PLATFORM-API-KEY` is a TrueFoundry personal API token with workspace deploy permissions. Tell me when the SecretGroup is ready."
 
 Do not ask the user to paste the values.
 
@@ -159,7 +159,7 @@ Deploy only after live validation passes:
 npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
 ```
 
-Use `--update` only when intentionally updating existing resources:
+Use `--update` only when the user has confirmed they want to replace the running deployment. `--update` redeploys the API service and runner job in-place and can interrupt in-flight Slack requests:
 
 ```bash
 npx @truefoundry/tfy-hermes-agent deploy hermes.yaml --update
@@ -174,10 +174,12 @@ Expected generated resources:
 <secrets>
 ```
 
-If this repo branch is being tested before package release or merge, set the source ref explicitly before deployment:
+The deployment builds from the `main` branch of this package by default. Only override `HERMES_SOURCE_REF` if the user is explicitly testing an unmerged branch, and unset it after the test:
 
 ```bash
-export HERMES_SOURCE_REF=codex/standalone-hermes-slack-agents
+# Only when testing an unmerged branch
+export HERMES_SOURCE_REF=<branch-or-commit>
+# unset HERMES_SOURCE_REF after the test
 ```
 
 ## Health Checks
@@ -194,6 +196,7 @@ Expected `/slack/health` includes:
 
 - `botTokenConfigured: true`
 - `signingSecretConfigured: true`
+- `oauthConfigured: false` (one-app-per-agent flow does not need Slack OAuth)
 - `createUsergroups: false`
 - `requireChannelDeployment: false`
 

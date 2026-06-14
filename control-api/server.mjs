@@ -1,23 +1,30 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_ROOT = process.env.HARNESS_STATE_DIR || "/data/state";
 const TFY_BASE_URL = (process.env.TFY_BASE_URL || process.env.TFY_HOST || "").replace(/\/+$/, "");
-const TFY_API_KEY = process.env.TFY_API_KEY || process.env.TFY_GATEWAY_API_KEY || "";
+const TFY_PLATFORM_API_KEY = process.env.TFY_PLATFORM_API_KEY || process.env.TFY_API_KEY || "";
+const TFY_GATEWAY_API_KEY = process.env.TFY_GATEWAY_API_KEY || "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_INFERENCE_MODEL || process.env.HARNESS_MODEL || "openai-main/gpt-5.5";
 const HERMES_JOB_APPLICATION_NAME = process.env.HERMES_JOB_APPLICATION_NAME || "hermes-turn-runner";
 const SKILLS_REGISTRY_URL = process.env.HERMES_SKILLS_REGISTRY_URL || "";
 const OPENAI_SYNC_TIMEOUT_MS = Number(process.env.HERMES_OPENAI_SYNC_TIMEOUT_MS || 120000);
 const OPENAI_POLL_INTERVAL_MS = Number(process.env.HERMES_OPENAI_POLL_INTERVAL_MS || 1000);
+const OPENAI_API_KEY = process.env.HERMES_OPENAI_API_KEY || "";
+const HARNESS_INTERNAL_TOKEN = process.env.HARNESS_INTERNAL_TOKEN || "";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.HARNESS_API_URL || "").replace(/\/+$/, "");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
 const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
 const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
 const SLACK_REDIRECT_URI = process.env.SLACK_REDIRECT_URI || "";
+const SLACK_OAUTH_STATE_SECRET = process.env.SLACK_OAUTH_STATE_SECRET || "";
+const SLACK_OAUTH_ENABLED = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_OAUTH_ENABLED || "").toLowerCase())
+  && Boolean(SLACK_CLIENT_ID && SLACK_CLIENT_SECRET && SLACK_OAUTH_STATE_SECRET);
 const SLACK_RUN_TIMEOUT_MS = Number(process.env.HERMES_SLACK_RUN_TIMEOUT_MS || OPENAI_SYNC_TIMEOUT_MS);
 const SLACK_STREAM_CHUNK_DELAY_MS = Number(process.env.HERMES_SLACK_STREAM_CHUNK_DELAY_MS || 120);
 const SLACK_STATUS_TEXT = process.env.HERMES_SLACK_STATUS_TEXT || "is thinking...";
@@ -25,6 +32,11 @@ const SLACK_DRY_RUN = ["1", "true", "yes"].includes(String(process.env.HERMES_SL
 const SLACK_CREATE_USERGROUPS = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_CREATE_USERGROUPS || "false").toLowerCase());
 const SLACK_REQUIRE_CHANNEL_DEPLOYMENT = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_REQUIRE_CHANNEL_DEPLOYMENT || "false").toLowerCase());
 const LOCAL_RUN_RESULT = process.env.HERMES_LOCAL_RUN_RESULT || "";
+const MAX_RUNS = Number(process.env.HERMES_MAX_RUNS || 2000);
+const MAX_SESSIONS = Number(process.env.HERMES_MAX_SESSIONS || 2000);
+const MAX_SLACK_CALLS = Number(process.env.HERMES_MAX_SLACK_CALLS || 500);
+const SSE_KEEPALIVE_MS = Number(process.env.HERMES_SSE_KEEPALIVE_MS || 15000);
+const RAW_SECRET_PATTERN = /\b(?:xoxb-[a-z0-9-]{10,}|xoxp-[a-z0-9-]{10,}|xapp-[a-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
 
 const stateFile = path.join(STATE_ROOT, "state.json");
 const defaultAgentId = "agt_hermes";
@@ -119,9 +131,49 @@ async function loadState() {
   }
 }
 
+function pruneState(state) {
+  const runEntries = Object.entries(state.runs || {});
+  if (runEntries.length > MAX_RUNS) {
+    runEntries.sort((a, b) => new Date(b[1].updatedAt || b[1].createdAt || 0) - new Date(a[1].updatedAt || a[1].createdAt || 0));
+    state.runs = Object.fromEntries(runEntries.slice(0, MAX_RUNS));
+  }
+  const sessionEntries = Object.entries(state.sessions || {});
+  if (sessionEntries.length > MAX_SESSIONS) {
+    sessionEntries.sort((a, b) => new Date(b[1].updatedAt || b[1].createdAt || 0) - new Date(a[1].updatedAt || a[1].createdAt || 0));
+    state.sessions = Object.fromEntries(sessionEntries.slice(0, MAX_SESSIONS));
+  }
+  if (Array.isArray(state.slack?.calls) && state.slack.calls.length > MAX_SLACK_CALLS) {
+    state.slack.calls = state.slack.calls.slice(-MAX_SLACK_CALLS);
+  }
+  return state;
+}
+
+let stateWriteChain = Promise.resolve();
+
 async function saveState(state) {
+  pruneState(state);
   await mkdir(STATE_ROOT, { recursive: true });
-  await writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+  const payload = `${JSON.stringify(state, null, 2)}\n`;
+  const tmpFile = `${stateFile}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const write = stateWriteChain.then(async () => {
+    await writeFile(tmpFile, payload);
+    await rename(tmpFile, stateFile);
+  });
+  stateWriteChain = write.catch(() => {});
+  return write;
+}
+
+let mutationQueue = Promise.resolve();
+
+function withState(mutator) {
+  const next = mutationQueue.then(async () => {
+    const state = await loadState();
+    const result = await mutator(state);
+    await saveState(state);
+    return result;
+  });
+  mutationQueue = next.catch(() => {});
+  return next;
 }
 
 async function json(req) {
@@ -327,7 +379,6 @@ async function slackToken({ teamId = null } = {}) {
 
 async function slackApi(method, body, options = {}) {
   if (SLACK_DRY_RUN) {
-    const state = await loadState();
     const ts = `${Math.floor(Date.now() / 1000)}.${String(Date.now() % 1000).padStart(6, "0")}`;
     const usergroupId = `S${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
     const payload = {
@@ -345,8 +396,9 @@ async function slackApi(method, body, options = {}) {
       } : undefined,
       message: method === "chat.stopStream" ? { type: "message", text: body.markdown_text || "", ts } : undefined
     };
-    state.slack.calls.push({ method, body, response: payload, createdAt: now() });
-    await saveState(state);
+    await withState((state) => {
+      state.slack.calls.push({ method, body, response: payload, createdAt: now() });
+    });
     return payload;
   }
   const token = await slackToken(options);
@@ -365,6 +417,29 @@ async function slackApi(method, body, options = {}) {
     throw new Error(`Slack ${method} failed: ${payload.error || res.status}`);
   }
   return payload;
+}
+
+function slackOAuthStateToken(nonce) {
+  if (!SLACK_OAUTH_STATE_SECRET) throw new Error("SLACK_OAUTH_STATE_SECRET is required for Slack OAuth");
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const payload = `${nonce}.${issuedAt}`;
+  const signature = createHmac("sha256", SLACK_OAUTH_STATE_SECRET).update(payload).digest("hex");
+  return `${payload}.${signature}`;
+}
+
+function verifySlackOAuthState(value, maxAgeSeconds = 600) {
+  if (!SLACK_OAUTH_STATE_SECRET || !value) return false;
+  const parts = String(value).split(".");
+  if (parts.length !== 3) return false;
+  const [nonce, issuedAtRaw, signature] = parts;
+  if (!nonce || !signature) return false;
+  const issuedAt = Number(issuedAtRaw);
+  if (!Number.isFinite(issuedAt)) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - issuedAt) > maxAgeSeconds) return false;
+  const expected = createHmac("sha256", SLACK_OAUTH_STATE_SECRET).update(`${nonce}.${issuedAtRaw}`).digest("hex");
+  const expectedBuf = Buffer.from(expected);
+  const signatureBuf = Buffer.from(signature);
+  return expectedBuf.length === signatureBuf.length && timingSafeEqual(expectedBuf, signatureBuf);
 }
 
 async function exchangeSlackOAuthCode(code) {
@@ -472,12 +547,12 @@ function pruneSlackEvents(events) {
 
 async function claimSlackEvent(eventId) {
   if (!eventId) return true;
-  const state = await loadState();
-  if (state.slack.events[eventId]) return false;
-  state.slack.events[eventId] = now();
-  pruneSlackEvents(state.slack.events);
-  await saveState(state);
-  return true;
+  return withState((state) => {
+    if (state.slack.events[eventId]) return false;
+    state.slack.events[eventId] = now();
+    pruneSlackEvents(state.slack.events);
+    return true;
+  });
 }
 
 function cleanSlackText(text) {
@@ -710,15 +785,15 @@ async function handleAssistantThreadStarted(payload) {
   const thread = payload.event?.assistant_thread;
   if (!thread?.channel_id || !thread?.thread_ts) return;
   const teamId = payload.team_id || thread.context?.team_id || null;
-  const state = await loadState();
-  ensureSlackThreadSession(state, {
-    teamId,
-    userId: thread.user_id,
-    channel: thread.channel_id,
-    threadTs: thread.thread_ts,
-    context: thread.context || null
+  await withState((state) => {
+    ensureSlackThreadSession(state, {
+      teamId,
+      userId: thread.user_id,
+      channel: thread.channel_id,
+      threadTs: thread.thread_ts,
+      context: thread.context || null
+    });
   });
-  await saveState(state);
   await slackApi("assistant.threads.setSuggestedPrompts", {
     channel_id: thread.channel_id,
     thread_ts: thread.thread_ts,
@@ -742,24 +817,26 @@ async function handleAssistantThreadStarted(payload) {
 async function handleAssistantThreadContextChanged(payload) {
   const thread = payload.event?.assistant_thread;
   if (!thread?.channel_id || !thread?.thread_ts) return;
-  const state = await loadState();
-  ensureSlackThreadSession(state, {
-    teamId: payload.team_id || thread.context?.team_id,
-    userId: thread.user_id,
-    channel: thread.channel_id,
-    threadTs: thread.thread_ts,
-    context: thread.context || null
+  await withState((state) => {
+    ensureSlackThreadSession(state, {
+      teamId: payload.team_id || thread.context?.team_id,
+      userId: thread.user_id,
+      channel: thread.channel_id,
+      threadTs: thread.thread_ts,
+      context: thread.context || null
+    });
   });
-  await saveState(state);
 }
 
 async function handleSlackUserMessage(payload) {
   const event = payload.event || {};
   if (event.bot_id || event.subtype || !event.channel || !event.user) return;
+  const teamId = payload.team_id || event.team;
+  const state = await loadState();
+  const installation = teamId ? state.slack.installations?.[teamId] : null;
+  if (installation?.botUserId && event.user === installation.botUserId) return;
   const channel = event.channel;
   const threadTs = event.thread_ts || event.ts;
-  const state = await loadState();
-  const teamId = payload.team_id || event.team;
   const route = parseMessageRoute(state, event.text);
   const text = route.text;
   const existingThread = state.slack.threads[slackThreadKey({ teamId, channel, threadTs })];
@@ -813,14 +890,16 @@ async function handleSlackUserMessage(payload) {
     return;
   }
 
-  const { thread } = ensureSlackThreadSession(state, {
-    teamId,
-    userId: event.user,
-    channel,
-    threadTs,
-    agentId: agent.id
+  const thread = await withState((mutableState) => {
+    const { thread: t } = ensureSlackThreadSession(mutableState, {
+      teamId,
+      userId: event.user,
+      channel,
+      threadTs,
+      agentId: agent.id
+    });
+    return { ...t };
   });
-  await saveState(state);
 
   let stream = null;
   try {
@@ -832,8 +911,7 @@ async function handleSlackUserMessage(payload) {
     await setSlackStatus({ channel, threadTs, teamId });
     stream = await startSlackStream({ channel, threadTs, teamId, userId: event.user, agent });
 
-    const freshState = await loadState();
-    const { run } = await createRun(freshState, {
+    const { run } = await createRun({
       sessionId: thread.sessionId,
       agentId: agent.id,
       userId: event.user,
@@ -950,19 +1028,32 @@ async function processSlackEvent(payload) {
   const claimed = await claimSlackEvent(payload.event_id);
   if (!claimed) return;
 
-  switch (payload.event?.type) {
-    case "assistant_thread_started":
-      await handleAssistantThreadStarted(payload);
-      break;
-    case "assistant_thread_context_changed":
-      await handleAssistantThreadContextChanged(payload);
-      break;
-    case "message":
-    case "app_mention":
-      await handleSlackUserMessage(payload);
-      break;
-    default:
-      break;
+  const timeoutMs = SLACK_RUN_TIMEOUT_MS + 30_000;
+  const work = (async () => {
+    switch (payload.event?.type) {
+      case "assistant_thread_started":
+        await handleAssistantThreadStarted(payload);
+        break;
+      case "assistant_thread_context_changed":
+        await handleAssistantThreadContextChanged(payload);
+        break;
+      case "message":
+      case "app_mention":
+        await handleSlackUserMessage(payload);
+        break;
+      default:
+        break;
+    }
+  })();
+
+  let timer;
+  const watchdog = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`slack event handler exceeded ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    await Promise.race([work, watchdog]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -973,29 +1064,41 @@ async function handleSlackInteraction(body) {
   if (!action?.action_id?.startsWith("hermes_feedback:")) return;
 
   const [, runId] = action.action_id.split(":");
-  const state = await loadState();
-  state.slack.feedback[id("fb")] = {
-    runId,
-    value: action.value || null,
-    userId: payload.user?.id || null,
-    channelId: payload.channel?.id || null,
-    messageTs: payload.message?.ts || null,
-    createdAt: now()
-  };
-  await saveState(state);
+  await withState((state) => {
+    state.slack.feedback[id("fb")] = {
+      runId,
+      value: action.value || null,
+      userId: payload.user?.id || null,
+      channelId: payload.channel?.id || null,
+      messageTs: payload.message?.ts || null,
+      createdAt: now()
+    };
+  });
 }
 
-async function handleSlackCommand(body) {
-  const form = new URLSearchParams(body);
+async function postSlackResponseUrl(responseUrl, message) {
+  if (!responseUrl) return;
+  try {
+    await fetch(responseUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(message)
+    });
+  } catch (error) {
+    console.error(`response_url POST failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function runSlackCommand(form) {
   const text = String(form.get("text") || "").trim();
   const userId = form.get("user_id") || "slack";
   const teamId = form.get("team_id") || null;
   const channelId = form.get("channel_id") || null;
-  const state = await loadState();
   const [rawAction = "help", rawHandle = "", ...rest] = text.split(/\s+/);
   const action = rawAction.toLowerCase();
 
   if (action === "list") {
+    const state = await loadState();
     return {
       response_type: "ephemeral",
       text: `Known Hermes agents:\n${formatAgentList(state)}`
@@ -1013,37 +1116,46 @@ async function handleSlackCommand(body) {
     try {
       handle = handleFromString(rawHandle);
     } catch (error) {
-      return {
-        response_type: "ephemeral",
-        text: error instanceof Error ? error.message : String(error)
-      };
+      return { response_type: "ephemeral", text: error instanceof Error ? error.message : String(error) };
     }
-    if (agentByHandle(state, handle)) {
+    const conflict = await loadState().then((s) => agentByHandle(s, handle));
+    if (conflict) {
       return {
         response_type: "ephemeral",
         text: `${agentLabel({ handle })} already exists. Use \`/hermes-agent use ${handle}\` or choose another handle.`
       };
     }
-    const agent = createAgentRecord({
+    const baseAgent = createAgentRecord({
       handle,
       name: rest.join(" ").trim() || `${handle} agent`,
       createdBy: userId
     });
-    let savedAgent = channelId ? deployAgentToSlackChannels(agent, [channelId]) : agent;
-    state.agents[agent.id] = agent;
+    let savedAgent = channelId ? deployAgentToSlackChannels(baseAgent, [channelId]) : baseAgent;
+    let provisionError = null;
     if (SLACK_CREATE_USERGROUPS) {
       try {
-        savedAgent = await provisionSlackAgentHandle(state, savedAgent, { teamId, memberUserIds: [userId] });
+        const provisionState = await loadState();
+        provisionState.agents[savedAgent.id] = savedAgent;
+        savedAgent = await provisionSlackAgentHandle(provisionState, savedAgent, { teamId, memberUserIds: [userId] });
+        await withState((state) => {
+          state.agents[savedAgent.id] = savedAgent;
+          state.slack.userAgents[userId] = savedAgent.id;
+        });
       } catch (error) {
-        return {
-          response_type: "ephemeral",
-          text: `I couldn't create the Slack handle ${agentLabel(agent)}: ${error instanceof Error ? error.message : String(error)}`
-        };
+        provisionError = error instanceof Error ? error.message : String(error);
       }
+    } else {
+      await withState((state) => {
+        state.agents[savedAgent.id] = savedAgent;
+        state.slack.userAgents[userId] = savedAgent.id;
+      });
     }
-    state.slack.userAgents[userId] = agent.id;
-    state.agents[agent.id] = savedAgent;
-    await saveState(state);
+    if (provisionError) {
+      return {
+        response_type: "ephemeral",
+        text: `I couldn't create the Slack handle ${agentLabel(savedAgent)}: ${provisionError}`
+      };
+    }
     const memberWarning = savedAgent.slackUsergroupMemberSyncError
       ? `\nSlack handle was created, but member sync needs attention: ${savedAgent.slackUsergroupMemberSyncError}`
       : "";
@@ -1054,59 +1166,63 @@ async function handleSlackCommand(body) {
   }
 
   if (action === "use") {
-    let agent = null;
-    try {
-      agent = agentByHandle(state, rawHandle);
-    } catch {
-      agent = null;
-    }
-    if (!agent) {
-      return {
-        response_type: "ephemeral",
-        text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
-      };
-    }
-    state.slack.userAgents[userId] = agent.id;
-    await saveState(state);
-    return {
-      response_type: "ephemeral",
-      text: `Your default Hermes agent is now ${agentLabel(agent)}. Existing threads keep their current agent unless you prefix a new message with another handle.`
-    };
-  }
-
-  if (action === "deploy") {
-    let agent = null;
-    if (!rawHandle) {
-      agent = state.agents[defaultAgentId];
-    } else {
+    const result = await withState((state) => {
+      let agent = null;
       try {
         agent = agentByHandle(state, rawHandle);
       } catch {
         agent = null;
       }
-    }
-    if (!agent) {
+      if (!agent) {
+        return {
+          response_type: "ephemeral",
+          text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
+        };
+      }
+      state.slack.userAgents[userId] = agent.id;
       return {
         response_type: "ephemeral",
-        text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
+        text: `Your default Hermes agent is now ${agentLabel(agent)}. Existing threads keep their current agent unless you prefix a new message with another handle.`
       };
-    }
-    const channels = normalizeSlackChannelIds(rest.length ? rest : [channelId]);
-    if (!channels.length) {
-      return {
-        response_type: "ephemeral",
-        text: `Tell me which channel to deploy ${agentLabel(agent)} to, or run this command from the target channel.`
-      };
-    }
-    const updated = deployAgentToSlackChannels(agent, channels);
-    state.agents[agent.id] = updated;
-    await saveState(state);
-    return {
-      response_type: "ephemeral",
-      text: `${agentLabel(updated)} is deployed to ${updated.slackChannelIds.join(", ")}.`
-    };
+    });
+    return result;
   }
 
+  if (action === "deploy") {
+    return withState((state) => {
+      let agent = null;
+      if (!rawHandle) {
+        agent = state.agents[defaultAgentId];
+      } else {
+        try {
+          agent = agentByHandle(state, rawHandle);
+        } catch {
+          agent = null;
+        }
+      }
+      if (!agent) {
+        return {
+          response_type: "ephemeral",
+          text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
+        };
+      }
+      const channels = normalizeSlackChannelIds(rest.length ? rest : [channelId]);
+      if (!channels.length) {
+        return {
+          response_type: "ephemeral",
+          text: `Tell me which channel to deploy ${agentLabel(agent)} to, or run this command from the target channel.`
+        };
+      }
+      const updated = deployAgentToSlackChannels(agent, channels);
+      state.agents[agent.id] = updated;
+      return {
+        response_type: "ephemeral",
+        text: `${agentLabel(updated)} is deployed to ${updated.slackChannelIds.join(", ")}.`
+      };
+    });
+  }
+
+  const state = await loadState();
   return {
     response_type: "ephemeral",
     text: [
@@ -1116,6 +1232,20 @@ async function handleSlackCommand(body) {
       "`/hermes-agent deploy` records the current channel only if channel deployment gating is enabled."
     ].join("\n")
   };
+}
+
+async function handleSlackCommand(body) {
+  const form = new URLSearchParams(body);
+  const responseUrl = form.get("response_url") || "";
+  runSlackCommand(form)
+    .then((message) => postSlackResponseUrl(responseUrl, message))
+    .catch((error) => {
+      console.error(`slack command handler failed: ${error instanceof Error ? error.message : String(error)}`);
+      return postSlackResponseUrl(responseUrl, {
+        response_type: "ephemeral",
+        text: `I hit an error running that command: ${error instanceof Error ? error.message : String(error)}`
+      });
+    });
 }
 
 function createdUnix(run) {
@@ -1143,15 +1273,56 @@ function requireTfySecretRefs(refs) {
 }
 
 async function tfyGet(apiPath) {
-  if (!TFY_BASE_URL || !TFY_API_KEY) {
-    throw new Error("TFY_BASE_URL/TFY_API_KEY are required");
+  if (!TFY_BASE_URL || !TFY_PLATFORM_API_KEY) {
+    throw new Error("TFY_BASE_URL and TFY_PLATFORM_API_KEY are required for TrueFoundry control-plane calls");
   }
   const res = await fetch(`${TFY_BASE_URL}${apiPath}`, {
-    headers: { authorization: `Bearer ${TFY_API_KEY}` }
+    headers: { authorization: `Bearer ${TFY_PLATFORM_API_KEY}` }
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`TrueFoundry ${apiPath} failed ${res.status}: ${text.slice(0, 500)}`);
   return text ? JSON.parse(text) : {};
+}
+
+function bearerToken(req) {
+  const header = String(req.headers["authorization"] || "");
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function requireInternalAuth(req, res) {
+  if (!HARNESS_INTERNAL_TOKEN) {
+    send(res, 503, { error: "HARNESS_INTERNAL_TOKEN is not configured on the control API" });
+    return false;
+  }
+  const provided = bearerToken(req);
+  if (!provided) {
+    send(res, 401, { error: "missing bearer token" });
+    return false;
+  }
+  const expected = Buffer.from(HARNESS_INTERNAL_TOKEN);
+  const got = Buffer.from(provided);
+  if (expected.length !== got.length || !timingSafeEqual(expected, got)) {
+    send(res, 401, { error: "invalid bearer token" });
+    return false;
+  }
+  return true;
+}
+
+function requireOpenAIAuth(req, res) {
+  if (!OPENAI_API_KEY) return true;
+  const provided = bearerToken(req);
+  if (!provided) {
+    sendOpenAIError(res, 401, "missing bearer token", "authentication_error");
+    return false;
+  }
+  const expected = Buffer.from(OPENAI_API_KEY);
+  const got = Buffer.from(provided);
+  if (expected.length !== got.length || !timingSafeEqual(expected, got)) {
+    sendOpenAIError(res, 401, "invalid bearer token", "authentication_error");
+    return false;
+  }
+  return true;
 }
 
 function shellQuote(value) {
@@ -1184,7 +1355,7 @@ async function listGatewayServers() {
 async function listSkillsRegistry() {
   if (!SKILLS_REGISTRY_URL) return [];
   const res = await fetch(SKILLS_REGISTRY_URL, {
-    headers: TFY_API_KEY ? { authorization: `Bearer ${TFY_API_KEY}` } : {}
+    headers: TFY_PLATFORM_API_KEY ? { authorization: `Bearer ${TFY_PLATFORM_API_KEY}` } : {}
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`skills registry failed ${res.status}: ${text.slice(0, 500)}`);
@@ -1211,16 +1382,21 @@ async function validateAgentPatch(patch) {
 }
 
 async function triggerJob(runId) {
-  if (!TFY_BASE_URL || !TFY_API_KEY || !TFY_WORKSPACE_FQN) return null;
+  if (!TFY_BASE_URL || !TFY_PLATFORM_API_KEY || !TFY_WORKSPACE_FQN) return null;
+  if (!PUBLIC_BASE_URL) {
+    throw new Error("PUBLIC_BASE_URL (or HARNESS_API_URL) must be set so the turn-runner can call back");
+  }
+  if (!HARNESS_INTERNAL_TOKEN) {
+    throw new Error("HARNESS_INTERNAL_TOKEN must be set so the turn-runner can authenticate to the control API");
+  }
   const apps = await tfyGet(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(TFY_WORKSPACE_FQN)}&limit=200`);
   const job = (Array.isArray(apps.data) ? apps.data : []).find((app) => app.name === HERMES_JOB_APPLICATION_NAME);
   const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
   if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_JOB_APPLICATION_NAME}`);
-  const controlUrl = process.env.PUBLIC_BASE_URL || process.env.HARNESS_API_URL || `http://localhost:${PORT}`;
   const payload = {
     deploymentId,
     input: {
-      command: `HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(controlUrl)} node runner/turn-runner.mjs`
+      command: `HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(PUBLIC_BASE_URL)} node runner/turn-runner.mjs`
     },
     metadata: {
       job_run_name_alias: runId
@@ -1229,7 +1405,7 @@ async function triggerJob(runId) {
   const res = await fetch(`${TFY_BASE_URL}/api/svc/v1/jobs/trigger`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${TFY_API_KEY}`,
+      authorization: `Bearer ${TFY_PLATFORM_API_KEY}`,
       "content-type": "application/json"
     },
     body: JSON.stringify(payload)
@@ -1241,27 +1417,7 @@ async function triggerJob(runId) {
   return text ? JSON.parse(text) : {};
 }
 
-async function createRun(state, { agentId = defaultAgentId, userId = "openai-sdk", sessionId = null, content, openai = null }) {
-  let session = sessionId ? state.sessions[sessionId] : null;
-  if (!session) {
-    sessionId = id("ses");
-    session = {
-      id: sessionId,
-      agentId,
-      userId,
-      messages: [],
-      createdAt: now(),
-      updatedAt: now()
-    };
-    state.sessions[sessionId] = session;
-  } else if (agentId && session.agentId !== agentId) {
-    session.agentId = agentId;
-    session.updatedAt = now();
-  }
-
-  const inputMessage = { id: id("msg"), role: "user", content, createdAt: now() };
-  session.messages.push(inputMessage);
-  session.updatedAt = now();
+async function createRun({ agentId = defaultAgentId, userId = "openai-sdk", sessionId = null, content, openai = null }) {
   const runId = id("run");
   const openAI = openai ? { ...openai } : null;
   if (openAI?.kind === "response" && !openAI.responseId) {
@@ -1270,57 +1426,106 @@ async function createRun(state, { agentId = defaultAgentId, userId = "openai-sdk
   if (openAI?.kind === "chat.completion" && !openAI.chatCompletionId) {
     openAI.chatCompletionId = openAIId("chatcmpl", runId);
   }
-  state.runs[runId] = {
-    id: runId,
-    sessionId: session.id,
-    agentId: session.agentId,
-    status: "queued",
-    content,
-    inputMessageId: inputMessage.id,
-    events: [],
-    openai: openAI,
-    createdAt: now(),
-    updatedAt: now()
-  };
-  await saveState(state);
-  if (LOCAL_RUN_RESULT) {
-    state.runs[runId].status = "completed";
-    state.runs[runId].result = LOCAL_RUN_RESULT;
-    state.runs[runId].trigger = { mode: "local" };
-    state.runs[runId].updatedAt = now();
-    session.messages.push({ role: "assistant", content: LOCAL_RUN_RESULT, createdAt: now() });
+
+  const queued = await withState((state) => {
+    let session = sessionId ? state.sessions[sessionId] : null;
+    if (!session) {
+      const newSessionId = id("ses");
+      session = {
+        id: newSessionId,
+        agentId,
+        userId,
+        messages: [],
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.sessions[newSessionId] = session;
+    } else if (agentId && session.agentId !== agentId) {
+      session.agentId = agentId;
+      session.updatedAt = now();
+    }
+    const inputMessage = { id: id("msg"), role: "user", content, createdAt: now() };
+    session.messages.push(inputMessage);
     session.updatedAt = now();
-    await saveState(state);
-    return { run: state.runs[runId], session };
+    state.runs[runId] = {
+      id: runId,
+      sessionId: session.id,
+      agentId: session.agentId,
+      status: "queued",
+      content,
+      inputMessageId: inputMessage.id,
+      events: [],
+      openai: openAI,
+      createdAt: now(),
+      updatedAt: now()
+    };
+    return { run: { ...state.runs[runId] }, session: { ...session } };
+  });
+
+  if (LOCAL_RUN_RESULT) {
+    return withState((state) => {
+      const run = state.runs[runId];
+      if (!run) return queued;
+      run.status = "completed";
+      run.result = LOCAL_RUN_RESULT;
+      run.trigger = { mode: "local" };
+      run.updatedAt = now();
+      const session = state.sessions[run.sessionId];
+      if (session) {
+        session.messages.push({ role: "assistant", content: LOCAL_RUN_RESULT, createdAt: now() });
+        session.updatedAt = now();
+      }
+      return { run: { ...run }, session: session ? { ...session } : queued.session };
+    });
   }
-  const trigger = await triggerJob(runId);
-  state.runs[runId].status = trigger ? "running" : "queued";
-  state.runs[runId].trigger = trigger;
-  state.runs[runId].updatedAt = now();
-  await saveState(state);
-  return { run: state.runs[runId], session };
+
+  let trigger = null;
+  let triggerError = null;
+  try {
+    trigger = await triggerJob(runId);
+  } catch (error) {
+    triggerError = error instanceof Error ? error.message : String(error);
+  }
+
+  return withState((state) => {
+    const run = state.runs[runId];
+    if (!run) return queued;
+    if (triggerError) {
+      run.status = "failed";
+      run.error = triggerError;
+    } else {
+      run.status = trigger ? "running" : "queued";
+    }
+    run.trigger = trigger;
+    run.updatedAt = now();
+    return { run: { ...run }, session: state.sessions[run.sessionId] ? { ...state.sessions[run.sessionId] } : queued.session };
+  });
 }
 
-async function waitForRun(runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS) {
+async function waitForRun(runId, { timeoutMs = OPENAI_SYNC_TIMEOUT_MS, isAborted = () => false } = {}) {
   const deadline = Date.now() + timeoutMs;
   let state = await loadState();
   let run = state.runs[runId];
-  while (run && !["completed", "failed"].includes(run.status) && Date.now() < deadline) {
+  while (run && !isRunTerminal(run.status) && Date.now() < deadline && !isAborted()) {
     await sleep(OPENAI_POLL_INTERVAL_MS);
     state = await loadState();
     run = state.runs[runId];
   }
-  return { state, run };
+  return { state, run, aborted: isAborted() };
 }
 
-async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs = SLACK_RUN_TIMEOUT_MS }) {
+function isRunTerminal(status) {
+  return ["completed", "failed", "cancelled"].includes(status);
+}
+
+async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs = SLACK_RUN_TIMEOUT_MS, isAborted = () => false }) {
   const deadline = Date.now() + timeoutMs;
   let eventOffset = 0;
   let streamedText = "";
   let state = await loadState();
   let run = state.runs[runId];
 
-  while (run && !["completed", "failed"].includes(run.status) && Date.now() < deadline) {
+  while (run && !isRunTerminal(run.status) && Date.now() < deadline && !isAborted()) {
     const events = Array.isArray(run.events) ? run.events : [];
     const newEvents = events.slice(eventOffset);
     eventOffset = events.length;
@@ -1331,7 +1536,11 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
     if (output) {
       streamedText += output;
       for (const chunk of chunkText(output)) {
-        await appendSlackStream({ channel, ts, markdownText: chunk, teamId });
+        try {
+          await appendSlackStream({ channel, ts, markdownText: chunk, teamId });
+        } catch (error) {
+          console.error(`appendSlackStream failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
     await sleep(OPENAI_POLL_INTERVAL_MS);
@@ -1339,7 +1548,7 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
     run = state.runs[runId];
   }
 
-  if (run) {
+  if (run && !isAborted()) {
     const events = Array.isArray(run.events) ? run.events : [];
     const newEvents = events.slice(eventOffset);
     const output = newEvents
@@ -1349,22 +1558,26 @@ async function streamRunToSlack({ runId, channel, ts, teamId = null, timeoutMs =
     if (output) {
       streamedText += output;
       for (const chunk of chunkText(output)) {
-        await appendSlackStream({ channel, ts, markdownText: chunk, teamId });
+        try {
+          await appendSlackStream({ channel, ts, markdownText: chunk, teamId });
+        } catch (error) {
+          console.error(`appendSlackStream failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }
 
-  return { run, streamedText };
+  return { run, streamedText, aborted: isAborted() };
 }
 
-async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelta }) {
+async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelta, isAborted = () => false }) {
   const deadline = Date.now() + timeoutMs;
   let eventOffset = 0;
   let streamedText = "";
   let state = await loadState();
   let run = state.runs[runId];
 
-  while (run && !["completed", "failed"].includes(run.status) && Date.now() < deadline) {
+  while (run && !isRunTerminal(run.status) && Date.now() < deadline && !isAborted()) {
     const events = Array.isArray(run.events) ? run.events : [];
     const newEvents = events.slice(eventOffset);
     eventOffset = events.length;
@@ -1381,7 +1594,7 @@ async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelt
     run = state.runs[runId];
   }
 
-  if (run) {
+  if (run && !isAborted()) {
     const events = Array.isArray(run.events) ? run.events : [];
     const newEvents = events.slice(eventOffset);
     const output = newEvents
@@ -1394,7 +1607,7 @@ async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelt
     }
   }
 
-  if (run?.status === "completed") {
+  if (run?.status === "completed" && !isAborted()) {
     const finalText = String(run.result || "");
     const finalRemainder = streamedText && finalText.startsWith(streamedText)
       ? finalText.slice(streamedText.length)
@@ -1405,7 +1618,7 @@ async function streamRunText({ runId, timeoutMs = OPENAI_SYNC_TIMEOUT_MS, onDelt
     }
   }
 
-  return { run, streamedText };
+  return { run, streamedText, aborted: isAborted() };
 }
 
 function sessionMemory(session, excludeMessageId = null) {
@@ -1544,21 +1757,45 @@ function chatCompletionChunk(run, { delta = {}, finishReason = null, usage = nul
 }
 
 function writeSse(res, data, event = null) {
+  if (res.writableEnded || res.destroyed) return;
   if (event) res.write(`event: ${event}\n`);
   res.write(`data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`);
 }
 
-function startSse(res) {
+function startSse(req, res) {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive",
     "x-accel-buffering": "no"
   });
+  const ctx = { aborted: false, keepAliveTimer: null };
+  const onClose = () => {
+    ctx.aborted = true;
+    if (ctx.keepAliveTimer) clearInterval(ctx.keepAliveTimer);
+  };
+  req.on("close", onClose);
+  res.on("close", onClose);
+  if (SSE_KEEPALIVE_MS > 0) {
+    ctx.keepAliveTimer = setInterval(() => {
+      if (ctx.aborted || res.writableEnded || res.destroyed) {
+        if (ctx.keepAliveTimer) clearInterval(ctx.keepAliveTimer);
+        return;
+      }
+      res.write(": ping\n\n");
+    }, SSE_KEEPALIVE_MS);
+    ctx.keepAliveTimer.unref?.();
+  }
+  return ctx;
 }
 
-async function streamResponseObject(res, run) {
-  startSse(res);
+function endSse(res, ctx) {
+  if (ctx?.keepAliveTimer) clearInterval(ctx.keepAliveTimer);
+  if (!res.writableEnded) res.end();
+}
+
+async function streamResponseObject(req, res, run) {
+  const ctx = startSse(req, res);
   let sequenceNumber = 0;
   const responseId = run.openai?.responseId || openAIId("resp", run.id);
   const itemId = openAIId("msg", run.id);
@@ -1607,6 +1844,7 @@ async function streamResponseObject(res, run) {
 
   const streamed = await streamRunText({
     runId: run.id,
+    isAborted: () => ctx.aborted,
     onDelta: async (delta) => {
       writeSse(res, {
         type: "response.output_text.delta",
@@ -1620,6 +1858,11 @@ async function streamResponseObject(res, run) {
     }
   });
 
+  if (streamed.aborted) {
+    endSse(res, ctx);
+    return;
+  }
+
   if (!streamed.run || streamed.run.status !== "completed") {
     writeSse(res, {
       type: "error",
@@ -1629,7 +1872,7 @@ async function streamResponseObject(res, run) {
         message: streamed.run?.error || "Hermes run did not complete before the streaming timeout"
       }
     }, "error");
-    res.end();
+    endSse(res, ctx);
     return;
   }
 
@@ -1677,18 +1920,24 @@ async function streamResponseObject(res, run) {
     sequence_number: sequenceNumber++,
     response: responseObject(streamed.run)
   }, "response.completed");
-  res.end();
+  endSse(res, ctx);
 }
 
-async function streamChatCompletion(res, run, { includeUsage = false } = {}) {
-  startSse(res);
+async function streamChatCompletion(req, res, run, { includeUsage = false } = {}) {
+  const ctx = startSse(req, res);
   writeSse(res, chatCompletionChunk(run, { delta: { role: "assistant", content: "" } }));
   const streamed = await streamRunText({
     runId: run.id,
+    isAborted: () => ctx.aborted,
     onDelta: async (delta) => {
       writeSse(res, chatCompletionChunk(run, { delta: { content: delta } }));
     }
   });
+
+  if (streamed.aborted) {
+    endSse(res, ctx);
+    return;
+  }
 
   if (!streamed.run || streamed.run.status !== "completed") {
     writeSse(res, {
@@ -1698,19 +1947,43 @@ async function streamChatCompletion(res, run, { includeUsage = false } = {}) {
       }
     });
     writeSse(res, "[DONE]");
-    res.end();
+    endSse(res, ctx);
     return;
   }
 
   writeSse(res, chatCompletionChunk(streamed.run, { delta: {}, finishReason: "stop" }));
   if (includeUsage) writeSse(res, chatCompletionChunk(streamed.run, { usage: null }));
   writeSse(res, "[DONE]");
-  res.end();
+  endSse(res, ctx);
+}
+
+function containsRawSecret(value) {
+  if (value == null) return false;
+  if (typeof value === "string") return RAW_SECRET_PATTERN.test(value);
+  if (Array.isArray(value)) return value.some(containsRawSecret);
+  if (typeof value === "object") return Object.values(value).some(containsRawSecret);
+  return false;
+}
+
+function rejectRawSecretsInPayload(payload) {
+  if (containsRawSecret(payload)) {
+    const error = new Error("payload contains raw secret-shaped value; use tfy-secret:// references stored in the agent SecretGroup");
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+async function readJsonOrError(req, res) {
+  try {
+    return [true, await json(req)];
+  } catch (error) {
+    sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
+    return [false, null];
+  }
 }
 
 async function handle(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const state = await loadState();
 
   try {
     if (req.method === "GET" && url.pathname === "/api/health") {
@@ -1718,12 +1991,13 @@ async function handle(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/slack/health") {
+      const state = await loadState();
       return send(res, 200, {
         ok: true,
         slack: {
           botTokenConfigured: Boolean(SLACK_BOT_TOKEN),
           signingSecretConfigured: Boolean(SLACK_SIGNING_SECRET),
-          oauthConfigured: Boolean(SLACK_CLIENT_ID && SLACK_CLIENT_SECRET),
+          oauthConfigured: SLACK_OAUTH_ENABLED,
           installations: Object.keys(state.slack.installations || {}).length,
           dryRun: SLACK_DRY_RUN,
           createUsergroups: SLACK_CREATE_USERGROUPS,
@@ -1732,15 +2006,31 @@ async function handle(req, res) {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/slack/oauth/install") {
+      if (!SLACK_OAUTH_ENABLED) return send(res, 404, { error: "Slack OAuth is not enabled" });
+      const nonce = randomUUID();
+      const stateToken = slackOAuthStateToken(nonce);
+      const params = new URLSearchParams({
+        client_id: SLACK_CLIENT_ID,
+        scope: "app_mentions:read,assistant:write,channels:history,channels:join,channels:read,chat:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,team:read,users:read",
+        state: stateToken
+      });
+      if (SLACK_REDIRECT_URI) params.set("redirect_uri", SLACK_REDIRECT_URI);
+      const target = `https://slack.com/oauth/v2/authorize?${params.toString()}`;
+      res.writeHead(302, { location: target });
+      return res.end();
+    }
+
     if (req.method === "GET" && url.pathname === "/slack/oauth/callback") {
+      if (!SLACK_OAUTH_ENABLED) return send(res, 404, { error: "Slack OAuth is not enabled" });
       const code = url.searchParams.get("code");
       const error = url.searchParams.get("error");
+      const stateParam = url.searchParams.get("state");
       if (error) return send(res, 400, { error });
       if (!code) return send(res, 400, { error: "missing Slack OAuth code" });
+      if (!verifySlackOAuthState(stateParam)) return send(res, 400, { error: "invalid or expired OAuth state" });
       const payload = await exchangeSlackOAuthCode(code);
-      const freshState = await loadState();
-      const installation = storeSlackInstallation(freshState, payload);
-      await saveState(freshState);
+      const installation = await withState((state) => storeSlackInstallation(state, payload));
       return send(res, 200, {
         ok: true,
         teamId: installation.teamId,
@@ -1752,7 +2042,12 @@ async function handle(req, res) {
     if (req.method === "POST" && url.pathname === "/slack/events") {
       const body = await rawBody(req);
       if (!verifySlackRequest(req, body)) return send(res, 401, { error: "invalid Slack signature" });
-      const payload = body ? JSON.parse(body) : {};
+      let payload;
+      try {
+        payload = body ? JSON.parse(body) : {};
+      } catch {
+        return send(res, 400, { error: "invalid JSON body" });
+      }
       if (payload.type === "url_verification") return send(res, 200, { challenge: payload.challenge });
       if (!SLACK_DRY_RUN && !(await slackToken({ teamId: payload.team_id || payload.team?.id || null }))) {
         return send(res, 503, { error: "Slack bot token is not configured for this team" });
@@ -1775,26 +2070,36 @@ async function handle(req, res) {
     if (req.method === "POST" && url.pathname === "/slack/commands") {
       const body = await rawBody(req);
       if (!verifySlackRequest(req, body)) return send(res, 401, { error: "invalid Slack signature" });
-      return send(res, 200, await handleSlackCommand(body));
+      handleSlackCommand(body).catch((error) => {
+        console.error(error instanceof Error ? error.stack || error.message : String(error));
+      });
+      return send(res, 200, { response_type: "ephemeral", text: "Working on it..." });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
+      if (!requireOpenAIAuth(req, res)) return;
       return send(res, 200, { object: "list", data: [{ id: HERMES_MODEL, object: "model" }] });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/responses") {
-      const body = await json(req);
+      if (!requireOpenAIAuth(req, res)) return;
+      const [ok, body] = await readJsonOrError(req, res);
+      if (!ok) return;
       let content;
       try {
         content = responsePrompt(body);
       } catch (error) {
         return sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
       }
-      const previousRun = body.previous_response_id ? state.runs[runIdFromOpenAIId(body.previous_response_id)] : null;
-      const { run } = await createRun(state, {
+      let previousSessionId = null;
+      if (body.previous_response_id) {
+        const snapshot = await loadState();
+        previousSessionId = snapshot.runs[runIdFromOpenAIId(body.previous_response_id)]?.sessionId || null;
+      }
+      const { run } = await createRun({
         agentId: body.agent || defaultAgentId,
         userId: body.user || "openai-sdk",
-        sessionId: previousRun?.sessionId || null,
+        sessionId: previousSessionId,
         content,
         openai: {
           kind: "response",
@@ -1803,10 +2108,13 @@ async function handle(req, res) {
           metadata: body.metadata || null
         }
       });
-      if (body.stream) return streamResponseObject(res, run);
+      if (body.stream) return streamResponseObject(req, res, run);
       if (body.background) return send(res, 200, responseObject(run));
 
-      const waited = await waitForRun(run.id);
+      const aborted = { value: false };
+      req.on("close", () => { aborted.value = true; });
+      const waited = await waitForRun(run.id, { isAborted: () => aborted.value });
+      if (aborted.value) return;
       if (!waited.run) return sendOpenAIError(res, 404, "response not found", "invalid_request_error");
       if (waited.run.status === "failed") {
         return sendOpenAIError(res, 500, waited.run.error || "Hermes run failed", "server_error");
@@ -1819,19 +2127,23 @@ async function handle(req, res) {
 
     const responseMatch = url.pathname.match(/^\/v1\/responses\/([^/]+)$/);
     if (responseMatch && req.method === "GET") {
+      if (!requireOpenAIAuth(req, res)) return;
+      const state = await loadState();
       const run = state.runs[runIdFromOpenAIId(responseMatch[1])];
       return run ? send(res, 200, responseObject(run)) : sendOpenAIError(res, 404, "response not found", "invalid_request_error");
     }
 
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-      const body = await json(req);
+      if (!requireOpenAIAuth(req, res)) return;
+      const [ok, body] = await readJsonOrError(req, res);
+      if (!ok) return;
       let content;
       try {
         content = promptFromMessages(body.messages);
       } catch (error) {
         return sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
       }
-      const { run } = await createRun(state, {
+      const { run } = await createRun({
         agentId: body.agent || defaultAgentId,
         userId: body.user || "openai-sdk",
         content,
@@ -1842,12 +2154,15 @@ async function handle(req, res) {
         }
       });
       if (body.stream) {
-        return streamChatCompletion(res, run, {
+        return streamChatCompletion(req, res, run, {
           includeUsage: Boolean(body.stream_options?.include_usage)
         });
       }
 
-      const waited = await waitForRun(run.id);
+      const aborted = { value: false };
+      req.on("close", () => { aborted.value = true; });
+      const waited = await waitForRun(run.id, { isAborted: () => aborted.value });
+      if (aborted.value) return;
       if (!waited.run) return sendOpenAIError(res, 404, "chat completion not found", "invalid_request_error");
       if (waited.run.status === "failed") {
         return sendOpenAIError(res, 500, waited.run.error || "Hermes run failed", "server_error");
@@ -1860,25 +2175,32 @@ async function handle(req, res) {
 
     const chatCompletionMatch = url.pathname.match(/^\/v1\/chat\/completions\/([^/]+)$/);
     if (chatCompletionMatch && req.method === "GET") {
+      if (!requireOpenAIAuth(req, res)) return;
+      const state = await loadState();
       const run = state.runs[runIdFromOpenAIId(chatCompletionMatch[1])];
       return run ? send(res, 200, chatCompletionObject(run)) : sendOpenAIError(res, 404, "chat completion not found", "invalid_request_error");
     }
 
     if (req.method === "GET" && url.pathname === "/api/agents") {
+      const state = await loadState();
       return send(res, 200, { agents: Object.values(state.agents) });
     }
 
     if (req.method === "POST" && url.pathname === "/api/agents") {
       const body = await json(req);
+      try { rejectRawSecretsInPayload(body); } catch (error) {
+        return send(res, error.statusCode || 400, { error: error.message });
+      }
       let handle;
       try {
         handle = handleFromString(body.handle || body.name);
       } catch (error) {
         return send(res, 400, { error: error instanceof Error ? error.message : String(error) });
       }
-      if (agentByHandle(state, handle)) return send(res, 409, { error: `agent handle already exists: ${handle}` });
+      const snapshot = await loadState();
+      if (agentByHandle(snapshot, handle)) return send(res, 409, { error: `agent handle already exists: ${handle}` });
       await validateAgentPatch(body);
-      const agent = {
+      const baseAgent = {
         ...createAgentRecord({
           handle,
           name: body.name || `${handle} agent`,
@@ -1893,24 +2215,29 @@ async function handle(req, res) {
         slackChannelIds: normalizeSlackChannelIds(body.slackChannelIds || body.channelIds || []),
         slackUserIds: normalizeSlackUserIds(body.slackUserIds || body.userIds || [])
       };
-      let savedAgent = agent;
-      state.agents[agent.id] = agent;
+      let savedAgent = await withState((state) => {
+        state.agents[baseAgent.id] = baseAgent;
+        return baseAgent;
+      });
       if (body.createSlackHandle !== false && SLACK_CREATE_USERGROUPS) {
         try {
-          savedAgent = await provisionSlackAgentHandle(state, agent, {
+          const provisionState = await loadState();
+          provisionState.agents[savedAgent.id] = savedAgent;
+          savedAgent = await provisionSlackAgentHandle(provisionState, savedAgent, {
             teamId: body.slackTeamId || body.teamId || null,
-            memberUserIds: agent.slackUserIds
+            memberUserIds: savedAgent.slackUserIds
           });
+          await withState((state) => { state.agents[savedAgent.id] = savedAgent; });
         } catch (error) {
           return send(res, 502, { error: error instanceof Error ? error.message : String(error) });
         }
       }
-      await saveState(state);
       return send(res, 201, { agent: savedAgent });
     }
 
     const agentHandleMatch = url.pathname.match(/^\/api\/agents\/by-handle\/([^/]+)$/);
     if (agentHandleMatch && req.method === "GET") {
+      const state = await loadState();
       let agent = null;
       try {
         agent = agentByHandle(state, agentHandleMatch[1]);
@@ -1922,16 +2249,18 @@ async function handle(req, res) {
 
     const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
     if (agentMatch && req.method === "GET") {
+      const state = await loadState();
       const agent = state.agents[agentMatch[1]];
       return agent ? send(res, 200, { agent }) : send(res, 404, { error: "agent not found" });
     }
 
     if (agentMatch && req.method === "PATCH") {
-      const agent = state.agents[agentMatch[1]];
-      if (!agent) return send(res, 404, { error: "agent not found" });
       const patch = await json(req);
+      try { rejectRawSecretsInPayload(patch); } catch (error) {
+        return send(res, error.statusCode || 400, { error: error.message });
+      }
       const createSlackHandle = patch.createSlackHandle;
-      const slackTeamId = patch.slackTeamId || patch.teamId || agent.slackTeamId || null;
+      const slackTeamId = patch.slackTeamId || patch.teamId || null;
       if (patch.channelIds && !patch.slackChannelIds) patch.slackChannelIds = patch.channelIds;
       if (patch.userIds && !patch.slackUserIds) patch.slackUserIds = patch.userIds;
       if (patch.slackChannelIds) patch.slackChannelIds = normalizeSlackChannelIds(patch.slackChannelIds);
@@ -1941,28 +2270,47 @@ async function handle(req, res) {
       delete patch.channelIds;
       delete patch.userIds;
       await validateAgentPatch(patch);
-      if (patch.handle) {
-        const handle = handleFromString(patch.handle);
-        const existing = agentByHandle(state, handle);
-        if (existing && existing.id !== agent.id) return send(res, 409, { error: `agent handle already exists: ${handle}` });
-        patch.handle = handle;
+      if (patch.handle) patch.handle = handleFromString(patch.handle);
+
+      let updatedAgent;
+      try {
+        updatedAgent = await withState((state) => {
+          const agent = state.agents[agentMatch[1]];
+          if (!agent) throw Object.assign(new Error("agent not found"), { statusCode: 404 });
+          if (patch.handle) {
+            const existing = agentByHandle(state, patch.handle);
+            if (existing && existing.id !== agent.id) {
+              throw Object.assign(new Error(`agent handle already exists: ${patch.handle}`), { statusCode: 409 });
+            }
+          }
+          const merged = { ...agent, ...patch, id: agent.id, updatedAt: now() };
+          state.agents[agent.id] = merged;
+          return merged;
+        });
+      } catch (error) {
+        return send(res, error.statusCode || 400, { error: error.message });
       }
-      let updatedAgent = { ...agent, ...patch, id: agent.id, updatedAt: now() };
-      state.agents[agent.id] = updatedAgent;
+
+      const effectiveTeamId = slackTeamId || updatedAgent.slackTeamId || null;
       if (createSlackHandle === true && SLACK_CREATE_USERGROUPS && !updatedAgent.slackUsergroupId) {
         try {
-          updatedAgent = await provisionSlackAgentHandle(state, updatedAgent, {
-            teamId: slackTeamId,
+          const provisionState = await loadState();
+          provisionState.agents[updatedAgent.id] = updatedAgent;
+          updatedAgent = await provisionSlackAgentHandle(provisionState, updatedAgent, {
+            teamId: effectiveTeamId,
             memberUserIds: patch.slackUserIds || []
           });
+          await withState((state) => { state.agents[updatedAgent.id] = updatedAgent; });
         } catch (error) {
           return send(res, 502, { error: error instanceof Error ? error.message : String(error) });
         }
       } else if (patch.slackUserIds) {
-        updatedAgent = await reconcileSlackAgentMembers(state, updatedAgent, { teamId: slackTeamId });
+        const reconcileState = await loadState();
+        reconcileState.agents[updatedAgent.id] = updatedAgent;
+        updatedAgent = await reconcileSlackAgentMembers(reconcileState, updatedAgent, { teamId: effectiveTeamId });
+        await withState((state) => { state.agents[updatedAgent.id] = updatedAgent; });
       }
-      await saveState(state);
-      return send(res, 200, { agent: state.agents[agent.id] });
+      return send(res, 200, { agent: updatedAgent });
     }
 
     if (req.method === "GET" && url.pathname === "/api/mcp/tools") {
@@ -1976,32 +2324,42 @@ async function handle(req, res) {
 
     if (req.method === "POST" && url.pathname === "/api/sessions") {
       const body = await json(req);
-      const sessionId = id("ses");
-      const agentId = body.agentId || defaultAgentId;
-      state.sessions[sessionId] = {
-        id: sessionId,
-        agentId,
-        userId: body.userId || "default",
-        messages: [],
-        createdAt: now(),
-        updatedAt: now()
-      };
-      await saveState(state);
-      return send(res, 201, { session: state.sessions[sessionId] });
+      try { rejectRawSecretsInPayload(body); } catch (error) {
+        return send(res, error.statusCode || 400, { error: error.message });
+      }
+      const session = await withState((state) => {
+        const sessionId = id("ses");
+        state.sessions[sessionId] = {
+          id: sessionId,
+          agentId: body.agentId || defaultAgentId,
+          userId: body.userId || "default",
+          messages: [],
+          createdAt: now(),
+          updatedAt: now()
+        };
+        return state.sessions[sessionId];
+      });
+      return send(res, 201, { session });
     }
 
     const sessionMessageMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
     if (sessionMessageMatch && req.method === "POST") {
-      const session = state.sessions[sessionMessageMatch[1]];
-      if (!session) return send(res, 404, { error: "session not found" });
       const body = await json(req);
+      try { rejectRawSecretsInPayload(body); } catch (error) {
+        return send(res, error.statusCode || 400, { error: error.message });
+      }
+      const snapshot = await loadState();
+      const session = snapshot.sessions[sessionMessageMatch[1]];
+      if (!session) return send(res, 404, { error: "session not found" });
       const content = String(body.content || body.message || "");
-      const { run } = await createRun(state, { sessionId: session.id, content });
+      const { run } = await createRun({ sessionId: session.id, content });
       return send(res, 202, { run });
     }
 
     const workMatch = url.pathname.match(/^\/api\/internal\/runs\/([^/]+)\/work-item$/);
     if (workMatch && req.method === "GET") {
+      if (!requireInternalAuth(req, res)) return;
+      const state = await loadState();
       const run = state.runs[workMatch[1]];
       if (!run) return send(res, 404, { error: "run not found" });
       const agent = state.agents[run.agentId];
@@ -2011,41 +2369,55 @@ async function handle(req, res) {
 
     const completeMatch = url.pathname.match(/^\/api\/internal\/runs\/([^/]+)\/complete$/);
     if (completeMatch && req.method === "POST") {
-      const run = state.runs[completeMatch[1]];
-      if (!run) return send(res, 404, { error: "run not found" });
+      if (!requireInternalAuth(req, res)) return;
       const body = await json(req);
-      run.status = body.status || "completed";
-      run.result = body.result || "";
-      run.error = body.error || null;
-      run.updatedAt = now();
-      const session = state.sessions[run.sessionId];
-      if (session && run.status === "completed") {
-        session.messages.push({ role: "assistant", content: run.result, createdAt: now() });
-        session.updatedAt = now();
+      try {
+        const run = await withState((state) => {
+          const r = state.runs[completeMatch[1]];
+          if (!r) throw Object.assign(new Error("run not found"), { statusCode: 404 });
+          r.status = body.status || "completed";
+          r.result = body.result || "";
+          r.error = body.error || null;
+          r.updatedAt = now();
+          const session = state.sessions[r.sessionId];
+          if (session && r.status === "completed") {
+            session.messages.push({ role: "assistant", content: r.result, createdAt: now() });
+            session.updatedAt = now();
+          }
+          return { ...r };
+        });
+        return send(res, 200, { run });
+      } catch (error) {
+        return send(res, error.statusCode || 500, { error: error.message });
       }
-      await saveState(state);
-      return send(res, 200, { run });
     }
 
     const eventMatch = url.pathname.match(/^\/api\/internal\/runs\/([^/]+)\/events$/);
     if (eventMatch && req.method === "POST") {
-      const run = state.runs[eventMatch[1]];
-      if (!run) return send(res, 404, { error: "run not found" });
+      if (!requireInternalAuth(req, res)) return;
       const body = await json(req);
-      run.events ||= [];
-      run.events.push({
-        id: id("evt"),
-        type: body.type || "event",
-        text: body.text || "",
-        createdAt: now()
-      });
-      run.updatedAt = now();
-      await saveState(state);
-      return send(res, 200, { ok: true });
+      try {
+        await withState((state) => {
+          const run = state.runs[eventMatch[1]];
+          if (!run) throw Object.assign(new Error("run not found"), { statusCode: 404 });
+          run.events ||= [];
+          run.events.push({
+            id: id("evt"),
+            type: body.type || "event",
+            text: body.text || "",
+            createdAt: now()
+          });
+          run.updatedAt = now();
+        });
+        return send(res, 200, { ok: true });
+      } catch (error) {
+        return send(res, error.statusCode || 500, { error: error.message });
+      }
     }
 
     const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
     if (runMatch && req.method === "GET") {
+      const state = await loadState();
       const run = state.runs[runMatch[1]];
       return run ? send(res, 200, { run }) : send(res, 404, { error: "run not found" });
     }
@@ -2065,12 +2437,41 @@ async function handle(req, res) {
 
     return send(res, 404, { error: "Not found." });
   } catch (error) {
-    return send(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    return send(res, error?.statusCode || 500, { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
-createServer((req, res) => {
-  handle(req, res).catch((error) => send(res, 500, { error: error.message }));
-}).listen(PORT, "0.0.0.0", () => {
+function assertStartupConfig() {
+  if (!HARNESS_INTERNAL_TOKEN) {
+    console.warn("[hermes] HARNESS_INTERNAL_TOKEN is not set; turn-runner callbacks will be rejected and job dispatch will fail");
+  }
+  if (!PUBLIC_BASE_URL) {
+    console.warn("[hermes] PUBLIC_BASE_URL is not set; turn-runner cannot reach this control API");
+  }
+  if (!OPENAI_API_KEY) {
+    console.warn("[hermes] HERMES_OPENAI_API_KEY is not set; /v1/* endpoints are unauthenticated. Front this service with a gateway or set the env.");
+  }
+  if (SLACK_BOT_TOKEN && !SLACK_SIGNING_SECRET) {
+    console.warn("[hermes] SLACK_BOT_TOKEN is set but SLACK_SIGNING_SECRET is missing; Slack requests will be rejected");
+  }
+}
+
+const httpServer = createServer((req, res) => {
+  handle(req, res).catch((error) => send(res, error?.statusCode || 500, { error: error.message }));
+});
+
+httpServer.listen(PORT, "0.0.0.0", () => {
+  assertStartupConfig();
   console.log(`hermes control API listening on :${PORT}`);
 });
+
+function shutdown(signal) {
+  console.log(`[hermes] received ${signal}, draining state writes`);
+  shuttingDown = true;
+  httpServer.close(() => {});
+  stateWriteChain.finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

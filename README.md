@@ -33,7 +33,14 @@ settings.
 
 - Skills must be loaded from the configured Skills Registry only.
 - Secrets must be referenced as `tfy-secret://...`; raw secret values are
-  rejected by the control API.
+  rejected by the control API on `POST/PATCH /api/agents`, `POST /api/sessions`,
+  and `POST /api/sessions/:id/messages`.
+- All deployment-time secrets live in the per-agent TrueFoundry SecretGroup and
+  are referenced from manifests via `tfy-secret://...` only.
+- The control API's `/v1/*` endpoints require `Authorization: Bearer
+  $HERMES_OPENAI_API_KEY` when that env is set.
+- The control API's `/api/internal/*` callbacks require `Authorization: Bearer
+  $HARNESS_INTERNAL_TOKEN`; the turn-runner reads the same token from its env.
 - MCP servers must be visible through TrueFoundry MCP Gateway with the configured
   token before they can be attached by name.
 
@@ -257,9 +264,23 @@ workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 secrets:
   TFY-GATEWAY-BASE-URL: "https://your-openai-compatible-gateway/v1"
   TFY-GATEWAY-API-KEY: "replace-in-truefoundry-only"
+  TFY-PLATFORM-API-KEY: "replace-in-truefoundry-only"
+  HARNESS-INTERNAL-TOKEN: "openssl rand -hex 32 -> paste here"
+  HERMES-OPENAI-API-KEY: "openssl rand -hex 32 -> paste here"
   SLACK-BOT-TOKEN: "xoxb-replace-in-truefoundry-only"
   SLACK-SIGNING-SECRET: "replace-in-truefoundry-only"
 ```
+
+`TFY-PLATFORM-API-KEY` is a TrueFoundry personal API token with permission to
+trigger jobs and list deployments in the target workspace. The control API uses
+it for `/api/svc/v1/*` calls (job dispatch, MCP gateway visibility). Keep it
+distinct from `TFY-GATEWAY-API-KEY`, which is the inference gateway key the
+turn-runner uses to talk to the OpenAI-compatible model endpoint.
+
+`HARNESS-INTERNAL-TOKEN` authenticates the turn-runner to the control API's
+`/api/internal/*` callbacks. `HERMES-OPENAI-API-KEY` is the Bearer token clients
+must present on `/v1/*` requests; unset it only when the service is fronted by
+an authenticated gateway.
 
 For direct low-level template usage, projects can copy `examples/hermes.yaml`
 and swap:

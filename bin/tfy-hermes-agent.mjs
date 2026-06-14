@@ -10,6 +10,9 @@ const DEFAULT_MODEL = "openai-main/gpt-5.5";
 const REQUIRED_SECRET_KEYS = [
   "TFY-GATEWAY-BASE-URL",
   "TFY-GATEWAY-API-KEY",
+  "TFY-PLATFORM-API-KEY",
+  "HARNESS-INTERNAL-TOKEN",
+  "HERMES-OPENAI-API-KEY",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
@@ -185,6 +188,9 @@ function secretGroupManifest(config) {
     secrets: {
       "TFY-GATEWAY-BASE-URL": "https://your-openai-compatible-gateway/v1",
       "TFY-GATEWAY-API-KEY": "replace-in-truefoundry-only",
+      "TFY-PLATFORM-API-KEY": "replace-in-truefoundry-only",
+      "HARNESS-INTERNAL-TOKEN": "replace-with-a-long-random-string",
+      "HERMES-OPENAI-API-KEY": "replace-with-a-long-random-string",
       "SLACK-BOT-TOKEN": "xoxb-replace-in-truefoundry-only",
       "SLACK-SIGNING-SECRET": "replace-in-truefoundry-only"
     }
@@ -227,12 +233,14 @@ function apiManifest(config) {
       TFY_BASE_URL: controlPlaneUrl(config),
       TFY_HOST: controlPlaneUrl(config),
       TFY_SERVICE_API_URL: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
+      TFY_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
+      TFY_PLATFORM_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
       TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
       TFY_GATEWAY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
+      HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
+      HERMES_OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
       SLACK_SIGNING_SECRET: secretRef(config, "SLACK-SIGNING-SECRET"),
-      SLACK_REDIRECT_URI: `${config.host.url}/slack/oauth/callback`,
       TFY_SECRET_TENANT: config.tenant,
       TFY_WORKSPACE_FQN: config.workspaceFqn,
       HERMES_AGENT_HANDLE: config.name,
@@ -287,8 +295,9 @@ function runnerManifest(config) {
       HERMES_HOME: "/workspace/.hermes",
       HARNESS_WORKSPACE_ROOT: "/workspace",
       HARNESS_CONTROL_API_URL: config.host.url,
+      HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
+      HARNESS_TURN_TIMEOUT_MS: "600000",
       TFY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
-      TFY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
       TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
       TFY_GATEWAY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
       TFY_SECRET_TENANT: config.tenant,

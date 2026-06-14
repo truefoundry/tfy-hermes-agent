@@ -2,14 +2,28 @@ import { spawn } from "node:child_process";
 
 const runId = process.env.HARNESS_RUN_ID || process.env.RUN_ID;
 const controlApi = (process.env.HARNESS_CONTROL_API_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+const internalToken = process.env.HARNESS_INTERNAL_TOKEN || "";
+const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 600_000);
 
 if (!runId || !controlApi) {
   console.error("HARNESS_RUN_ID and HARNESS_CONTROL_API_URL are required");
   process.exit(2);
 }
 
+if (!internalToken) {
+  console.error("HARNESS_INTERNAL_TOKEN is required so the runner can authenticate to the control API");
+  process.exit(2);
+}
+
+function authHeaders(extra = {}) {
+  return {
+    authorization: `Bearer ${internalToken}`,
+    ...extra
+  };
+}
+
 async function getJson(apiPath) {
-  const res = await fetch(`${controlApi}${apiPath}`);
+  const res = await fetch(`${controlApi}${apiPath}`, { headers: authHeaders() });
   const text = await res.text();
   if (!res.ok) throw new Error(`${apiPath} failed ${res.status}: ${text}`);
   return text ? JSON.parse(text) : {};
@@ -18,7 +32,7 @@ async function getJson(apiPath) {
 async function postJson(apiPath, body) {
   const res = await fetch(`${controlApi}${apiPath}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body)
   });
   const text = await res.text();
@@ -54,14 +68,23 @@ function runHermes(prompt, work) {
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
 
-  const args = ["-m", "hermes_cli.main", "-z", prompt];
+  const args = ["-z", prompt];
   if (model) args.push("--model", model);
   if (work.agent?.mcpServers?.length) args.push("--toolsets", work.agent.mcpServers.join(","));
 
   return new Promise((resolve, reject) => {
-    const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("hermes", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch {}
+      }, 5_000).unref();
+    }, turnTimeoutMs);
+    timer.unref?.();
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString("utf8");
       stdout += text;
@@ -73,10 +96,15 @@ function runHermes(prompt, work) {
       });
     });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("exit", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`hermes exited ${code}: ${stderr || stdout}`));
+      clearTimeout(timer);
+      if (killed) return reject(new Error(`hermes turn exceeded HARNESS_TURN_TIMEOUT_MS=${turnTimeoutMs}ms`));
+      if (code === 0) return resolve(stdout.trim());
+      reject(new Error(`hermes exited ${code}: ${stderr || stdout}`));
     });
   });
 }

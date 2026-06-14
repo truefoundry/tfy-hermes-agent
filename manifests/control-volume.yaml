@@ -1,4 +1,4 @@
-name: hermes-control-state
+name: ${HERMES_AGENT_HANDLE}-hermes-state
 type: volume
 workspace_fqn: ${TFY_WORKSPACE_FQN}
 size: "20Gi"
