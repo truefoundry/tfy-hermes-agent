@@ -113,15 +113,29 @@ async function loadState() {
 }
 
 function pruneState(state) {
+  const recency = (entry) => new Date(entry[1].updatedAt || entry[1].createdAt || 0);
+
   const runEntries = Object.entries(state.runs || {});
+  const activeRunIds = new Set(runEntries.filter(([, run]) => !isRunTerminal(run.status)).map(([id]) => id));
   if (runEntries.length > MAX_RUNS) {
-    runEntries.sort((a, b) => new Date(b[1].updatedAt || b[1].createdAt || 0) - new Date(a[1].updatedAt || a[1].createdAt || 0));
-    state.runs = Object.fromEntries(runEntries.slice(0, MAX_RUNS));
+    runEntries.sort((a, b) => recency(b) - recency(a));
+    const keep = new Set(runEntries.slice(0, MAX_RUNS).map(([id]) => id));
+    for (const id of activeRunIds) keep.add(id);
+    state.runs = Object.fromEntries(runEntries.filter(([id]) => keep.has(id)));
   }
+
+  const liveSessionIds = new Set(
+    Object.values(state.runs || {})
+      .filter((run) => !isRunTerminal(run.status))
+      .map((run) => run.sessionId)
+      .filter(Boolean)
+  );
   const sessionEntries = Object.entries(state.sessions || {});
   if (sessionEntries.length > MAX_SESSIONS) {
-    sessionEntries.sort((a, b) => new Date(b[1].updatedAt || b[1].createdAt || 0) - new Date(a[1].updatedAt || a[1].createdAt || 0));
-    state.sessions = Object.fromEntries(sessionEntries.slice(0, MAX_SESSIONS));
+    sessionEntries.sort((a, b) => recency(b) - recency(a));
+    const keep = new Set(sessionEntries.slice(0, MAX_SESSIONS).map(([id]) => id));
+    for (const id of liveSessionIds) keep.add(id);
+    state.sessions = Object.fromEntries(sessionEntries.filter(([id]) => keep.has(id)));
   }
   return state;
 }
@@ -941,7 +955,10 @@ function shellQuote(value) {
 }
 
 async function triggerJob(runId) {
-  if (!TFY_HOST || !TFY_API_KEY || !TFY_WORKSPACE_FQN) return null;
+  if (process.env.HERMES_SKIP_EXECUTOR_DISPATCH === "1") return null;
+  if (!TFY_HOST || !TFY_API_KEY || !TFY_WORKSPACE_FQN) {
+    throw new Error("TFY_HOST, TFY_API_KEY, and TFY_WORKSPACE_FQN are required to dispatch the executor job");
+  }
   if (!PUBLIC_BASE_URL) {
     throw new Error("PUBLIC_BASE_URL must be set so the executor can call back");
   }
@@ -1036,7 +1053,7 @@ async function createRun({ agentId = defaultAgentId, userId = "openai-sdk", sess
       run.status = "failed";
       run.error = triggerError;
     } else {
-      run.status = trigger ? "running" : "queued";
+      run.status = "running";
     }
     run.trigger = trigger;
     run.updatedAt = now();
@@ -1839,11 +1856,16 @@ httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`hermes controller listening on :${PORT}`);
 });
 
+async function drainPendingWrites() {
+  await mutationQueue.catch(() => {});
+  await stateWriteChain.catch(() => {});
+}
+
 function shutdown(signal) {
   console.log(`[hermes] received ${signal}, draining state writes`);
   shuttingDown = true;
   httpServer.close(() => {});
-  stateWriteChain.finally(() => process.exit(0));
+  drainPendingWrites().finally(() => process.exit(0));
   setTimeout(() => process.exit(0), 10_000).unref();
 }
 

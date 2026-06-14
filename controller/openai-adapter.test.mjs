@@ -69,7 +69,8 @@ async function withServer(fn) {
       HARNESS_INTERNAL_TOKEN: internalToken,
       HERMES_OPENAI_SYNC_TIMEOUT_MS: "5000",
       HERMES_OPENAI_POLL_INTERVAL_MS: "50",
-      HERMES_SSE_KEEPALIVE_MS: "0"
+      HERMES_SSE_KEEPALIVE_MS: "0",
+      HERMES_SKIP_EXECUTOR_DISPATCH: "1"
     },
     stdio: ["ignore", "ignore", "pipe"]
   });

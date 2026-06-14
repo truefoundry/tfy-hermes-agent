@@ -51,8 +51,8 @@ function assertObject(value, label) {
 
 function slugifyName(value) {
   const name = String(value || "").trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(name)) {
-    throw new Error("name must be 3-63 chars and use lowercase letters, numbers, and hyphens");
+  if (!/^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$/.test(name)) {
+    throw new Error("name must be 2-32 chars and use lowercase letters, numbers, and hyphens (Slack handle limit)");
   }
   return name;
 }
