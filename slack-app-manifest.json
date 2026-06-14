@@ -1,0 +1,72 @@
+{
+  "display_information": {
+    "name": "Devrel Assistant",
+    "description": "TrueFoundry Hermes agent in Slack",
+    "long_description": "Use Devrel Assistant to access one TrueFoundry-hosted Hermes agent directly inside Slack. The app supports assistant threads, status updates while work is running, streamed replies, channel mentions, direct messages, and feedback controls.",
+    "background_color": "#111827"
+  },
+  "features": {
+    "assistant_view": {
+      "assistant_description": "Sai's DevRel operating assistant for TrueFoundry.",
+      "suggested_prompts": [
+        {
+          "title": "Summarize this thread",
+          "message": "Summarize the current Slack context and suggest next steps."
+        },
+        {
+          "title": "Plan an implementation",
+          "message": "Turn this request into a concise implementation plan."
+        },
+        {
+          "title": "Review recent context",
+          "message": "Review the visible context and call out risks or missing information."
+        }
+      ]
+    },
+    "bot_user": {
+      "display_name": "devrel-assistant",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "channels:join",
+        "channels:read",
+        "chat:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "team:read",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud/slack/events",
+      "bot_events": [
+        "app_mention",
+        "assistant_thread_context_changed",
+        "assistant_thread_started",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud/slack/interactions"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
