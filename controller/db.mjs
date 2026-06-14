@@ -144,4 +144,82 @@ export function openDb(stateRoot) {
   return db;
 }
 
+/**
+ * Build the controller's prepared-statement object. Centralized here so the
+ * SQL stays close to the schema. The shape is stable; the controller treats
+ * these as opaque .run/.get/.all callsites.
+ */
+export function prepareStatements(db) {
+  return {
+    upsertAgent: db.prepare(`
+      INSERT INTO agents (id, handle, name, model, instructions, workspace_fqn,
+                          slack_team_id, skills, mcp_servers,
+                          slack_allowed_channels, slack_allowed_users,
+                          created_at, updated_at)
+      VALUES (@id, @handle, @name, @model, @instructions, @workspace_fqn,
+              @slack_team_id, @skills, @mcp_servers,
+              @slack_allowed_channels, @slack_allowed_users,
+              @created_at, @updated_at)
+      ON CONFLICT(id) DO UPDATE SET
+        handle = excluded.handle,
+        name = excluded.name,
+        model = excluded.model,
+        instructions = excluded.instructions,
+        workspace_fqn = excluded.workspace_fqn,
+        slack_team_id = excluded.slack_team_id,
+        skills = excluded.skills,
+        mcp_servers = excluded.mcp_servers,
+        slack_allowed_channels = excluded.slack_allowed_channels,
+        slack_allowed_users = excluded.slack_allowed_users,
+        updated_at = excluded.updated_at
+    `),
+    getAgentById: db.prepare('SELECT * FROM agents WHERE id = ?'),
+    getAgentByHandle: db.prepare('SELECT * FROM agents WHERE handle = ?'),
+    insertRun: db.prepare(`
+      INSERT INTO runs (id, hermes_session_id, status, slack_channel,
+                        slack_message_ts, openai_kind, openai_id,
+                        created_at, updated_at)
+      VALUES (@id, @hermes_session_id, @status, @slack_channel,
+              @slack_message_ts, @openai_kind, @openai_id,
+              @created_at, @updated_at)
+    `),
+    setRunDispatched: db.prepare('UPDATE runs SET status = ?, trigger = ?, updated_at = ? WHERE id = ?'),
+    setRunFailed: db.prepare("UPDATE runs SET status = 'failed', error = ?, trigger = ?, updated_at = ? WHERE id = ?"),
+    setRunStatus: db.prepare('UPDATE runs SET status = ?, updated_at = ? WHERE id = ?'),
+    completeRun: db.prepare(`
+      UPDATE runs SET status = ?, result = ?, error = ?, updated_at = ? WHERE id = ?
+    `),
+    getRunById: db.prepare('SELECT * FROM runs WHERE id = ?'),
+    getRunByOpenAIId: db.prepare('SELECT * FROM runs WHERE openai_id = ? ORDER BY created_at DESC LIMIT 1'),
+    selectResumeRuns: db.prepare(`
+      SELECT * FROM runs
+       WHERE status IN ('dispatched','running')
+         AND slack_message_ts IS NOT NULL
+    `),
+    insertRunEvent: db.prepare('INSERT INTO run_events (run_id, type, payload, created_at) VALUES (?, ?, ?, ?)'),
+    selectRunEvents: db.prepare('SELECT id, type, payload, created_at FROM run_events WHERE run_id = ? ORDER BY id ASC'),
+    selectRunEventsAfter: db.prepare('SELECT id, type, payload, created_at FROM run_events WHERE run_id = ? AND id > ? ORDER BY id ASC'),
+    getSlackThread: db.prepare('SELECT * FROM slack_threads WHERE team_id = ? AND channel = ? AND thread_ts = ?'),
+    insertSlackThread: db.prepare(`
+      INSERT INTO slack_threads (team_id, channel, thread_ts, hermes_session_id, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(team_id, channel, thread_ts) DO NOTHING
+    `),
+    claimSlackEvent: db.prepare(`
+      INSERT INTO slack_seen_events (event_id, seen_at)
+      VALUES (?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `),
+    claimSlackMessage: db.prepare(`
+      INSERT INTO slack_seen_messages (key, seen_at)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO NOTHING
+    `),
+    insertSlackFeedback: db.prepare(`
+      INSERT INTO slack_feedback (run_id, value, slack_user_id, channel_id, message_ts, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+  };
+}
+
 export { SCHEMA_VERSION };

@@ -17,6 +17,8 @@
     "controller/openai-adapter.mjs",
     "controller/pubsub.mjs",
     "controller/reconciler.mjs",
+    "controller/slack.mjs",
+    "controller/sse.mjs",
     "controller/tokens.mjs",
     "examples/agent.hermes.yaml",
     "executor/executor.mjs",
