@@ -1,5 +1,9 @@
 name: devrel-assistant
 
+# Optional. Git ref (branch, tag, or commit SHA) of truefoundry/tfy-hermes-agent
+# to build the controller and executor images from. Defaults to `main`.
+# version: main
+
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.

@@ -172,6 +172,11 @@ export async function readHermesConfig(file) {
   const badSkills = skills.filter((s) => !validateSkillFqn(s));
   if (badSkills.length) throw new Error(`skills must be agent-skill FQNs: ${badSkills.join(", ")}`);
 
+  const version = String(config.version || "").trim();
+  if (version && !/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,254}$/.test(version)) {
+    throw new Error("version must be a git branch, tag, or commit SHA");
+  }
+
   return {
     name,
     workspaceFqn,
@@ -185,7 +190,8 @@ export async function readHermesConfig(file) {
     slack: normalizeSlackAccess(config.slack),
     slackTeamId: String(config.slack_team_id || "").trim(),
     skills,
-    mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl)
+    mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl),
+    version
   };
 }
 
@@ -205,8 +211,12 @@ function controlPlaneUrl(config) {
   return baseTfyUrl() || `https://${config.tenant}.truefoundry.cloud`;
 }
 
-function buildImage(dockerfilePath, command) {
-  const sourceRef = process.env.HERMES_SOURCE_REF || DEFAULT_SOURCE_REF;
+function buildImage(config, dockerfilePath, command) {
+  // Priority: hermes.yaml `version` field → HERMES_SOURCE_REF env → "main".
+  // `version` accepts any git ref the build system can clone: a branch name,
+  // a tag, or a commit SHA. It populates both `branch_name` (used by the
+  // platform's git puller) and `ref` (used for clone pinning).
+  const sourceRef = config.version || process.env.HERMES_SOURCE_REF || DEFAULT_SOURCE_REF;
   const manifest = {
     type: "build",
     build_source: {
@@ -243,7 +253,7 @@ export function controllerManifest(config) {
     name: r.controller,
     type: "service",
     workspace_fqn: config.workspaceFqn,
-    image: buildImage("Dockerfile.controller"),
+    image: buildImage(config, "Dockerfile.controller"),
     resources: {
       cpu_request: 0.25, cpu_limit: 1,
       memory_request: 512, memory_limit: 1024,
@@ -288,7 +298,7 @@ export function executorManifest(config) {
     trigger: { type: "manual" },
     concurrency_limit: 20,
     retries: 0,
-    image: buildImage("Dockerfile.executor", "node executor/executor.mjs"),
+    image: buildImage(config, "Dockerfile.executor", "node executor/executor.mjs"),
     resources: {
       cpu_request: 0.1, cpu_limit: 2,
       memory_request: 2048, memory_limit: 4096,
