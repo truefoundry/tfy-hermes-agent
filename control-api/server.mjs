@@ -705,8 +705,7 @@ async function startSlackStream({ channel, threadTs, teamId, userId, agent }) {
         type: "task_update",
         id: "hermes_turn",
         title: `Run ${agentLabel(agent)}`,
-        status: "in_progress",
-        details: "Working through the request"
+        status: "in_progress"
       }
     ]
   }, { teamId });
@@ -1027,9 +1026,9 @@ async function handleSlackUserMessage(payload) {
           title: `Run ${agentLabel(agent)}`,
           status: "in_progress",
           details: slackTaskDetails([
-            `Slack delivery: ${formatDurationMs(receivedAt - sentAt)}`,
+            `Request received: ${formatDurationMs(receivedAt - sentAt)} after send`,
             `Stream opened: ${formatDurationMs(timing.streamOpenedAt - streamStartAt)} (${formatDurationMs(timing.streamOpenedAt - sentAt)} total)`,
-            `Run triggered: ${formatDurationMs(timing.runTriggeredAt - runTriggerStartAt)} (${formatDurationMs(timing.runTriggeredAt - sentAt)} total)`
+            `Runner job queued: ${formatDurationMs(timing.runTriggeredAt - runTriggerStartAt)} (${formatDurationMs(timing.runTriggeredAt - sentAt)} total)`
           ])
         }
       ]
