@@ -21,6 +21,9 @@ settings.
   runs, MCP visibility, and run completion callbacks.
 - `runner/` - TrueFoundry Job entrypoint that executes one `hermes -z` turn.
 - `manifests/` - reusable TrueFoundry YAML templates.
+- `skills/deploy-hermes-slack-agent/` - repo-local operator skill for guiding a
+  user through manifest generation, Slack app setup, secrets, deploy, health,
+  and first-message verification.
 - `examples/agent.hermes.yaml` - intended high-level standalone agent config
   that a project-local compiler can expand into TrueFoundry and Slack manifests.
 - `examples/hermes.yaml` - compact project-local example for deploying the
