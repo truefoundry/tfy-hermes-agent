@@ -1001,6 +1001,7 @@ async function handleSlackUserMessage(payload) {
       channel,
       ts: stream.ts,
       teamId,
+      markdownText: output,
       blocks: slackFeedbackBlocks(streamed.run.id)
     });
     await clearSlackStatus({ channel, threadTs, teamId }).catch(() => {});
