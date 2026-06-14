@@ -71,10 +71,15 @@ Maintain this state internally and progress in order. If a value is obvious from
 - **Mention-only in channels.** In public/private channels and channel threads, the bot should run only on a direct mention. DMs may respond without mention.
 - **Prompt layering is additive.** `hermes.yaml` instructions should append to Hermes' internal prompt through the runner, not replace `SOUL.md` and not get pasted into the user message as ordinary context.
 - **MCP servers are URLs only.** They must be reachable through the TrueFoundry MCP Gateway. The runner derives toolset names, writes Hermes MCP config, runs discovery synchronously, and passes those toolsets into oneshot.
-- **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The runner resolves presigned tarball URLs with `TFY-PLATFORM-API-KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
+- **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The runner resolves presigned tarball URLs with `TFY_API_KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
 - **Slack streaming does not need WebSockets.** Use Slack assistant/thread APIs over HTTP. If provider/Hermes output is buffered, Slack still shows activity first and appends the final answer when ready.
 - **A thinking card without a final answer is a bug.** Check Slack stream finalization, final markdown text formatting, and duplicate final-send paths before blaming the model.
 - **Duplicate runs usually mean duplicate Slack event routing.** Check event id dedupe, bot-message ignores, assistant-thread follow-up handling, and whether both mention and message handlers are firing for the same Slack event.
+
+## References
+
+- Read `references/deployment-example.md` when creating or reviewing a concrete `hermes.yaml`, generated SecretGroup scaffold, or Slack app setup.
+- Read `references/session-smoke-test.md` before declaring a deployed agent healthy.
 
 ## Deploy Dependency Order
 
@@ -188,19 +193,18 @@ npx @truefoundry/tfy-hermes-agent compile hermes.yaml
 
 Then stop and give exactly one manual task:
 
-"Create or update the TrueFoundry SecretGroup named `<secrets>` and add these keys: `TFY-GATEWAY-BASE-URL`, `TFY-GATEWAY-API-KEY`, `TFY-PLATFORM-API-KEY`, `HARNESS-INTERNAL-TOKEN`, `HERMES-OPENAI-API-KEY`, `SLACK-BOT-TOKEN`, and `SLACK-SIGNING-SECRET`. Put the values in TrueFoundry directly, not in chat. Generate `HARNESS-INTERNAL-TOKEN` and `HERMES-OPENAI-API-KEY` locally as long random strings (for example `openssl rand -hex 32`) and paste them straight into the TrueFoundry UI. `TFY-PLATFORM-API-KEY` is a TrueFoundry personal API token with workspace deploy permissions. Tell me when the SecretGroup is ready."
+"Create or update the TrueFoundry SecretGroup named `<secrets>` from the generated scaffold. It should contain exactly these keys: `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`, `HARNESS-INTERNAL-TOKEN`, `TFY_GATEWAY_URL`, `TFY_API_KEY`, and `TFY_HOST`. The compiler generates `HARNESS-INTERNAL-TOKEN` for new agents. Leave that generated value unless rotating the agent. Fill the other placeholders in TrueFoundry directly, not in chat. Tell me when the SecretGroup is ready."
 
 Do not ask the user to paste the values.
 
 Secret key purpose:
 
-- `TFY-GATEWAY-BASE-URL`: OpenAI-compatible gateway base URL.
-- `TFY-GATEWAY-API-KEY`: model/gateway bearer token used by the runner.
-- `TFY-PLATFORM-API-KEY`: TrueFoundry platform token used for job dispatch and skill/MCP validation.
+- `SLACK-BOT-TOKEN`: Slack bot token from the installed Slack app.
+- `SLACK-SIGNING-SECRET`: Slack signing secret from the Slack app.
 - `HARNESS-INTERNAL-TOKEN`: private shared secret between API service and runner callbacks.
-- `HERMES-OPENAI-API-KEY`: bearer token for clients calling this agent's `/v1/*` API.
-- `SLACK-BOT-TOKEN`: Slack bot token from the installed app.
-- `SLACK-SIGNING-SECRET`: Slack request signing secret from the app.
+- `TFY_GATEWAY_URL`: OpenAI-compatible model gateway URL.
+- `TFY_API_KEY`: one TrueFoundry API key used for platform calls, MCP/skill resolution, model gateway calls, and `/v1/*` Bearer auth.
+- `TFY_HOST`: TrueFoundry tenant/control-plane host, kept with the agent for platform calls and future migrations.
 
 ## Live Validation
 
@@ -286,6 +290,14 @@ Before claiming the deployment works, run or verify at least one backend session
 
 For MCP-backed agents, ask a smoke-test question that forces a tool call, then inspect events for `tool_start` and `tool_complete`.
 
+Run the multi-session smoke test before Slack handoff:
+
+1. Create session 1 and send 10 turns.
+2. Create session 2 and send 5 turns.
+3. Return to session 1 and send one more turn; confirm it preserves session 1 context.
+4. Run one session 1 turn and one session 2 turn in parallel; both should complete without cross-session leakage.
+5. Confirm every completed run has a final result, not just Hermes activity/thinking events.
+
 ## Manual Stop 3: Slack URL Verification
 
 When health checks pass, stop with one manual task:
@@ -303,6 +315,8 @@ Ask the user to send one real Slack mention:
 ```
 
 Then ask for only the result. If it fails, troubleshoot based on the symptom:
+
+While the user sends the first request, monitor API and runner logs or run events. Confirm the Slack webhook arrives, exactly one run is created, the runner starts, and the final Slack response is posted.
 
 - Slack URL verification fails: confirm API health, `/slack/health`, and same-app signing secret.
 - Slack auth error: reinstall the app and refresh `SLACK-BOT-TOKEN` in the SecretGroup.

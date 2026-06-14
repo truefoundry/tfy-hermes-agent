@@ -2,17 +2,17 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import YAML from "yaml";
 
 const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
 const REQUIRED_SECRET_KEYS = [
-  "TFY-GATEWAY-BASE-URL",
-  "TFY-GATEWAY-API-KEY",
-  "TFY-PLATFORM-API-KEY",
+  "TFY_GATEWAY_URL",
+  "TFY_API_KEY",
+  "TFY_HOST",
   "HARNESS-INTERNAL-TOKEN",
-  "HERMES-OPENAI-API-KEY",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
@@ -190,11 +190,10 @@ function secretGroupManifest(config) {
     type: "secret-group",
     workspace_fqn: config.workspaceFqn,
     secrets: {
-      "TFY-GATEWAY-BASE-URL": "https://your-openai-compatible-gateway/v1",
-      "TFY-GATEWAY-API-KEY": "replace-in-truefoundry-only",
-      "TFY-PLATFORM-API-KEY": "replace-in-truefoundry-only",
-      "HARNESS-INTERNAL-TOKEN": "replace-with-a-long-random-string",
-      "HERMES-OPENAI-API-KEY": "replace-with-a-long-random-string",
+      TFY_GATEWAY_URL: "https://your-openai-compatible-gateway/v1",
+      TFY_API_KEY: "replace-in-truefoundry-only",
+      TFY_HOST: controlPlaneUrl(config),
+      "HARNESS-INTERNAL-TOKEN": randomBytes(32).toString("hex"),
       "SLACK-BOT-TOKEN": "xoxb-replace-in-truefoundry-only",
       "SLACK-SIGNING-SECRET": "replace-in-truefoundry-only"
     }
@@ -237,15 +236,15 @@ function apiManifest(config) {
       HARNESS_STATE_DIR: "/data/state",
       PUBLIC_BASE_URL: config.host.url,
       HARNESS_API_URL: config.host.url,
-      TFY_BASE_URL: controlPlaneUrl(config),
-      TFY_HOST: controlPlaneUrl(config),
-      TFY_SERVICE_API_URL: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
-      TFY_PLATFORM_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
-      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
-      TFY_GATEWAY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
+      TFY_BASE_URL: secretRef(config, "TFY_HOST"),
+      TFY_HOST: secretRef(config, "TFY_HOST"),
+      TFY_SERVICE_API_URL: secretRef(config, "TFY_HOST"),
+      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
+      TFY_GATEWAY_API_KEY: secretRef(config, "TFY_API_KEY"),
       HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
-      HERMES_OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
+      HERMES_OPENAI_API_KEY: secretRef(config, "TFY_API_KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
       SLACK_SIGNING_SECRET: secretRef(config, "SLACK-SIGNING-SECRET"),
       TFY_SECRET_TENANT: config.tenant,
@@ -304,12 +303,12 @@ function runnerManifest(config) {
       HARNESS_CONTROL_API_URL: config.host.url,
       HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
       HARNESS_TURN_TIMEOUT_MS: "600000",
-      TFY_SERVICE_API_URL: controlPlaneUrl(config),
-      TFY_PLATFORM_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
-      TFY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
-      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
-      TFY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
-      TFY_GATEWAY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
+      TFY_SERVICE_API_URL: secretRef(config, "TFY_HOST"),
+      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
+      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
+      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_GATEWAY_API_KEY: secretRef(config, "TFY_API_KEY"),
       TFY_SECRET_TENANT: config.tenant,
       TFY_WORKSPACE_FQN: config.workspaceFqn,
       HERMES_INFERENCE_MODEL: config.model,
@@ -394,7 +393,7 @@ function allManifests(config) {
     [`${config.name}-secret-group.scaffold.yaml`]: secretGroupManifest(config),
     [`${config.name}-volume.yaml`]: volumeManifest(config),
     [`${config.name}-api-service.yaml`]: apiManifest(config),
-    [`${config.name}-turn-runner-job.yaml`]: runnerManifest(config),
+    [`${config.name}-runner-job.yaml`]: runnerManifest(config),
     "slack-app-manifest.json": slackManifest(config)
   };
 }
