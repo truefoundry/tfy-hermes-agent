@@ -203,6 +203,13 @@ def _tool_label(tool_name, args=None):
     return {"tool_name": tool_name, "args": compact_args}
 
 
+def _seconds_to_ms(value):
+    try:
+        return float(value) * 1000
+    except (TypeError, ValueError):
+        return None
+
+
 def on_pre_api_request(**kwargs):
     _emit(
         "model_request_start",
@@ -219,7 +226,7 @@ def on_post_api_request(**kwargs):
         "model_request_complete",
         model=kwargs.get("model") or kwargs.get("response_model"),
         finish_reason=kwargs.get("finish_reason"),
-        duration_ms=kwargs.get("api_duration"),
+        duration_ms=_seconds_to_ms(kwargs.get("api_duration")),
         assistant_tool_call_count=kwargs.get("assistant_tool_call_count"),
         usage=_compact(kwargs.get("usage")),
     )
@@ -230,7 +237,7 @@ def on_api_request_error(**kwargs):
     _emit(
         "model_request_error",
         model=kwargs.get("model"),
-        duration_ms=kwargs.get("api_duration"),
+        duration_ms=_seconds_to_ms(kwargs.get("api_duration")),
         reason=kwargs.get("reason"),
         error_type=error.get("type") or kwargs.get("error_type"),
         error_message=_short(error.get("message") or kwargs.get("error_message") or ""),
