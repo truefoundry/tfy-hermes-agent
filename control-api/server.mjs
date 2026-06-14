@@ -1009,7 +1009,8 @@ async function handleSlackUserMessage(payload) {
           id: "hermes_turn",
           title: `Run ${agentLabel(agent)}`,
           status: "complete",
-          details: "Response ready"
+          details: "Response ready",
+          output
         }
       ]
     });
@@ -1027,6 +1028,14 @@ async function handleSlackUserMessage(payload) {
       teamId,
       markdownText: output,
       blocks: slackFeedbackBlocks(streamed.run.id)
+    });
+    await postSlackMessage({
+      channel,
+      threadTs,
+      teamId,
+      text: output
+    }).catch((error) => {
+      console.error(`postSlackMessage final fallback failed: ${error instanceof Error ? error.message : String(error)}`);
     });
     await clearSlackStatus({ channel, threadTs, teamId }).catch(() => {});
   } catch (error) {
