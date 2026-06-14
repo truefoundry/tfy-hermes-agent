@@ -287,6 +287,14 @@ turn-runner uses to talk to the OpenAI-compatible model endpoint.
 must present on `/v1/*` requests; unset it only when the service is fronted by
 an authenticated gateway.
 
+At runtime, the generated turn-runner makes the YAML entries operational before
+starting Hermes:
+
+- `skills` FQNs are resolved through TrueFoundry's agent-skill-version API,
+  downloaded as skill tarballs, and extracted into `$HERMES_HOME/skills`.
+- `mcp_servers` URLs are written into Hermes `config.yaml`, discovered
+  synchronously, and enabled as toolsets for the oneshot run.
+
 For direct low-level template usage, projects can copy `examples/hermes.yaml`
 and swap:
 

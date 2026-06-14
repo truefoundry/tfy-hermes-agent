@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const runId = process.env.HARNESS_RUN_ID || process.env.RUN_ID;
@@ -125,6 +126,80 @@ function mcpToolsetNames(servers) {
     seen.set(baseName, count + 1);
     return count ? `${baseName}-${count + 1}` : baseName;
   }).filter(Boolean);
+}
+
+function skillNameFromFqn(fqn, fallback) {
+  const match = String(fqn || "").match(/^agent-skill:[^/]+\/[^/]+\/([^:]+):(\d+)$/i);
+  const raw = match ? match[1] : fallback || "skill";
+  return String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "skill";
+}
+
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, stdio: options.stdio || ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`${command} ${args.join(" ")} exited with ${code}: ${redact(stderr || stdout)}`));
+    });
+  });
+}
+
+async function installAgentSkills(env, skills) {
+  const fqns = (skills || []).map((entry) => String(entry || "").trim()).filter(Boolean);
+  if (!fqns.length) return [];
+  const serviceApi = (env.TFY_SERVICE_API_URL || env.TFY_PLATFORM_BASE_URL || "").replace(/\/+$/, "");
+  const token = env.TFY_PLATFORM_API_KEY || "";
+  if (!serviceApi || !token) {
+    throw new Error("TFY_SERVICE_API_URL and TFY_PLATFORM_API_KEY are required to install Hermes skills");
+  }
+
+  const res = await fetch(`${serviceApi}/api/ml/v1/x/agent-skill-versions/presigned-urls`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ agent_skill_version_fqns: fqns })
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`skill tar URL fetch failed ${res.status}: ${text.slice(0, 500)}`);
+  const body = text ? JSON.parse(text) : {};
+  const items = Array.isArray(body.data) ? body.data : [];
+  const returned = new Set(items.map((item) => item.fqn));
+  const missing = fqns.filter((fqn) => !returned.has(fqn));
+  if (missing.length) throw new Error(`skill tar URLs missing for: ${missing.join(", ")}`);
+
+  const skillsRoot = path.join(env.HERMES_HOME || path.join(env.HOME || process.cwd(), ".hermes"), "skills", "truefoundry");
+  await mkdir(skillsRoot, { recursive: true });
+  const installed = [];
+  for (const item of items) {
+    const name = skillNameFromFqn(item.fqn, item.name);
+    const dest = path.join(skillsRoot, name);
+    const tarPath = path.join(tmpdir(), `${runId}-${name}.tar`);
+    const tarRes = await fetch(item.presigned_url);
+    if (!tarRes.ok) throw new Error(`skill tar download failed for ${item.fqn}: ${tarRes.status}`);
+    await writeFile(tarPath, Buffer.from(await tarRes.arrayBuffer()), { mode: 0o600 });
+    const listing = await runCommand("tar", ["-tf", tarPath]);
+    for (const entry of listing.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
+      if (path.isAbsolute(entry) || entry.split(/[\\/]+/).includes("..")) {
+        throw new Error(`skill tar for ${item.fqn} contains unsafe path: ${entry}`);
+      }
+    }
+    await rm(dest, { recursive: true, force: true });
+    await mkdir(dest, { recursive: true });
+    await runCommand("tar", ["-xf", tarPath, "-C", dest]);
+    await rm(tarPath, { force: true });
+    installed.push({ fqn: item.fqn, name });
+  }
+  return installed;
 }
 
 function looksLikeHermesFailure(text) {
@@ -345,6 +420,7 @@ async function runHermes(prompt, work) {
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
   const hermesHome = await writeHermesConfig(env, model, work);
+  const installedSkills = await installAgentSkills(env, work.agent?.skills);
 
   const promptPath = path.join(hermesHome, `prompt-${runId}.txt`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
@@ -395,6 +471,8 @@ if __name__ == "__main__":
       promptChars: prompt.length,
       mcpServerCount: Array.isArray(work.agent?.mcpServers) ? work.agent.mcpServers.length : 0,
       toolsets,
+      skillCount: Array.isArray(work.agent?.skills) ? work.agent.skills.length : 0,
+      installedSkills: installedSkills.map((skill) => skill.name),
       openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
       openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY),
       hermesHomeConfigured: Boolean(hermesHome)

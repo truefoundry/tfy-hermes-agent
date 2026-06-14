@@ -304,6 +304,8 @@ function runnerManifest(config) {
       HARNESS_CONTROL_API_URL: config.host.url,
       HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
       HARNESS_TURN_TIMEOUT_MS: "600000",
+      TFY_SERVICE_API_URL: controlPlaneUrl(config),
+      TFY_PLATFORM_API_KEY: secretRef(config, "TFY-PLATFORM-API-KEY"),
       TFY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
       TFY_GATEWAY_BASE_URL: secretRef(config, "TFY-GATEWAY-BASE-URL"),
       TFY_API_KEY: secretRef(config, "TFY-GATEWAY-API-KEY"),
@@ -498,12 +500,28 @@ async function checkMcpGateway(config) {
   return [];
 }
 
+async function checkSkills(config) {
+  if (!config.skills.length) return [];
+  if (!liveChecksAvailable()) return ["Skipped live skill checks because TFY credentials are not configured."];
+  const body = await tfyFetch("/api/ml/v1/x/agent-skill-versions/bulk-get", {
+    method: "POST",
+    body: JSON.stringify({
+      data: config.skills.map((fqn) => ({ fqn, fetch_skill_md_content: false }))
+    })
+  });
+  const returned = new Set((Array.isArray(body.data) ? body.data : []).map((row) => row.fqn));
+  const missing = config.skills.filter((fqn) => !returned.has(fqn));
+  if (missing.length) throw new Error(`skills are not visible through TrueFoundry: ${missing.join(", ")}`);
+  return [];
+}
+
 async function validate(config, { allowUpdate = false, skipLiveChecks = false } = {}) {
   if (skipLiveChecks) return [];
   return [
     ...(await checkNameCollisions(config, allowUpdate)),
     ...(await checkSecretGroup(config)),
-    ...(await checkMcpGateway(config))
+    ...(await checkMcpGateway(config)),
+    ...(await checkSkills(config))
   ];
 }
 
