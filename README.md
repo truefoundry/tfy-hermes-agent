@@ -12,6 +12,14 @@ Hermes on TrueFoundry:
 - `bin/tfy-hermes-agent.mjs` - validates, compiles, and deploys `hermes.yaml`.
 - `skills/deploy-hermes-slack-agent/` - full deployment runbook.
 
+Install the skill into your coding agent with [`skills`](https://skills.sh):
+
+```bash
+npx skills add truefoundry/tfy-hermes-agent -y
+```
+
+Add `-g` to install globally, or `-a claude-code` to target a specific agent.
+
 `hermes.yaml` is the source of truth. Compile it to create an agent-named output
 folder:
 
