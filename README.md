@@ -21,7 +21,8 @@ settings.
   runs, MCP visibility, and run completion callbacks.
 - `runner/` - executor job entrypoint that executes one `hermes -z` turn.
 - `snapshotter/` - snapshotter job entrypoint that snapshots persisted
-  controller state.
+  controller state to TrueFoundry artifact versions, with a local volume copy as
+  a fallback/debug cache.
 - `manifests/` - reusable TrueFoundry YAML templates.
 - `skills/deploy-hermes-slack-agent/` - repo-local operator skill for guiding a
   user through manifest generation, Slack app setup, secrets, deploy, health,
@@ -56,6 +57,8 @@ export HERMES_AGENT_SECRET_GROUP=devrel-assistant-hermes-secrets
 export HERMES_API_HOST=controller-sai-ws.ml.tfy-eo.truefoundry.cloud
 export HERMES_REPO_URL=https://github.com/truefoundry/tfy-hermes-agent
 export HERMES_SOURCE_REF=main
+export HERMES_SNAPSHOT_ML_REPO=devrel-assistant
+export HERMES_SNAPSHOT_ARTIFACT_NAME=devrel-assistant-state-snapshots
 
 ./scripts/render-manifests.sh
 ```
@@ -233,6 +236,12 @@ workspace, host, and per-agent SecretGroup. The compiler expands that into:
 - a `snapshotter` job
 - a per-agent Slack app manifest
 
+The snapshotter reads persisted controller state from the `state` volume, writes
+a local copy under `/data/snapshots`, and logs the same JSON file as a new
+TrueFoundry artifact version. TrueFoundry artifacts are immutable versions stored
+in ML Repos, so `snapshot_ml_repo` must name an ML Repo that exists and is
+accessible from the deployment workspace.
+
 Example:
 
 ```yaml
@@ -250,6 +259,8 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
+snapshot_ml_repo: devrel-assistant
+snapshot_artifact_name: devrel-assistant-state-snapshots
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
@@ -288,6 +299,11 @@ runtime does not have to infer it later.
 `/api/internal/*` callbacks. The compiler generates a random placeholder for
 new SecretGroup scaffolds; keep the generated value unless rotating the agent.
 
+`snapshot_ml_repo` controls where snapshot artifact versions are written. If it
+is omitted, the compiler defaults to the agent `name`. `snapshot_artifact_name`
+defaults to `<name>-state-snapshots`. Live validation checks that the ML Repo is
+visible before deployment.
+
 At runtime, the generated executor makes the YAML entries operational before
 starting Hermes:
 
@@ -315,6 +331,6 @@ Compiler validation:
 - validates skill entries as `agent-skill:<tenant>/<repo>/<name>:<version>` FQNs
 - validates MCP entries as URLs
 - with TrueFoundry credentials, checks deployment name collisions, required
-  SecretGroup keys, and MCP Gateway visibility
+  SecretGroup keys, MCP Gateway visibility, and snapshot ML Repo access
 - refuses to deploy over existing controller/executor/snapshotter names unless
   `--update` is passed

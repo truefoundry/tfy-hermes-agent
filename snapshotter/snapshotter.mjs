@@ -1,9 +1,13 @@
 import { copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const stateRoot = process.env.HARNESS_STATE_DIR || "/data/state";
 const snapshotRoot = process.env.HERMES_SNAPSHOT_DIR || "/data/snapshots";
 const retainCount = Number(process.env.HERMES_SNAPSHOT_RETAIN_COUNT || 50);
+const artifactUploadDisabled = process.env.HERMES_SNAPSHOT_DISABLE_ARTIFACT_UPLOAD === "1";
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
@@ -30,7 +34,36 @@ async function main() {
   const target = path.join(snapshotRoot, `state-${timestamp()}.json`);
   await copyFile(source, target);
   await pruneSnapshots();
-  console.log(`snapshot written: ${target}`);
+  console.log(`local snapshot written: ${target}`);
+  if (artifactUploadDisabled) {
+    console.log("artifact upload disabled by HERMES_SNAPSHOT_DISABLE_ARTIFACT_UPLOAD=1");
+    return;
+  }
+  const result = await logArtifact(target);
+  console.log(`artifact snapshot written: ${result}`);
+}
+
+function logArtifact(snapshotFile) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", [path.join("snapshotter", "log_artifact.py"), snapshotFile], {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`artifact upload failed with ${code}: ${stderr || stdout}`));
+    });
+  });
 }
 
 main().catch((error) => {

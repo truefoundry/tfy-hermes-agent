@@ -14,6 +14,8 @@ Collect these first:
 - `host`: public agent API URL
 - `workspace_fqn`: TrueFoundry workspace FQN
 - `secrets`: SecretGroup name, default `<name>-hermes-secrets`
+- `snapshot_ml_repo`: ML Repo where snapshot artifact versions are logged, default `<name>`
+- `snapshot_artifact_name`: artifact name for state snapshots, default `<name>-state-snapshots`
 
 ## hermes.yaml
 
@@ -34,6 +36,8 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
+snapshot_ml_repo: devrel-assistant
+snapshot_artifact_name: devrel-assistant-state-snapshots
 
 skills: []
 
@@ -87,3 +91,10 @@ Apply generated manifests after validation:
 
 The SecretGroup scaffold is for user filling and should not overwrite existing
 secrets during normal deploy.
+
+The snapshotter must log a real artifact version on every successful snapshot.
+A local `/data/snapshots` file alone is not enough. Expected artifact FQN shape:
+
+```text
+artifact:<tenant>/<snapshot_ml_repo>/<snapshot_artifact_name>:<version>
+```

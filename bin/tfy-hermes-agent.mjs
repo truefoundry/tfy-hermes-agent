@@ -96,6 +96,12 @@ function validateSkillFqn(value) {
   return /^agent-skill:[a-z0-9-]+\/[a-z0-9._-]+\/[a-z0-9._-]+:\d+$/i.test(value);
 }
 
+function validateRegistryName(value, label) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,126}$/.test(value)) {
+    throw new Error(`${label} must use letters, numbers, dots, underscores, or hyphens`);
+  }
+}
+
 function normalizeMcpUrl(value) {
   let parsed;
   try {
@@ -124,6 +130,11 @@ async function readHermesConfig(file) {
   const invalidSkills = skills.filter((skill) => !validateSkillFqn(skill));
   if (invalidSkills.length) throw new Error(`skills must be agent-skill FQNs: ${invalidSkills.join(", ")}`);
 
+  const snapshotMlRepo = String(config.snapshot_ml_repo || name).trim();
+  const snapshotArtifactName = String(config.snapshot_artifact_name || `${name}-state-snapshots`).trim();
+  validateRegistryName(snapshotMlRepo, "snapshot_ml_repo");
+  validateRegistryName(snapshotArtifactName, "snapshot_artifact_name");
+
   return {
     name,
     workspaceFqn,
@@ -133,6 +144,8 @@ async function readHermesConfig(file) {
     instructions: String(config.instructions || "").trim(),
     model: String(config.model || DEFAULT_MODEL).trim(),
     secrets,
+    snapshotMlRepo,
+    snapshotArtifactName,
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl)
   };
@@ -345,7 +358,16 @@ function snapshotterManifest(config) {
     env: {
       HARNESS_STATE_DIR: "/data/state",
       HERMES_SNAPSHOT_DIR: "/data/snapshots",
-      HERMES_SNAPSHOT_RETAIN_COUNT: "50"
+      HERMES_SNAPSHOT_RETAIN_COUNT: "50",
+      HERMES_SNAPSHOT_ML_REPO: config.snapshotMlRepo,
+      HERMES_SNAPSHOT_ARTIFACT_NAME: config.snapshotArtifactName,
+      HERMES_AGENT_HANDLE: config.name,
+      TFY_BASE_URL: secretRef(config, "TFY_HOST"),
+      TFY_HOST: secretRef(config, "TFY_HOST"),
+      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_SECRET_TENANT: config.tenant,
+      TFY_WORKSPACE_FQN: config.workspaceFqn
     },
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }]
   };
@@ -544,13 +566,25 @@ async function checkSkills(config) {
   return [];
 }
 
+async function checkSnapshotMlRepo(config) {
+  if (!liveChecksAvailable()) return ["Skipped live snapshot ML Repo checks because TFY credentials are not configured."];
+  const body = await tfyFetch("/api/ml/v1/ml-repos?limit=200");
+  const rows = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
+  const names = new Set(rows.map((row) => row.name || row.manifest?.name || row.fqn?.split("/").at(-1)).filter(Boolean));
+  if (!names.has(config.snapshotMlRepo)) {
+    throw new Error(`snapshot_ml_repo not found or not accessible: ${config.snapshotMlRepo}`);
+  }
+  return [];
+}
+
 async function validate(config, { allowUpdate = false, skipLiveChecks = false } = {}) {
   if (skipLiveChecks) return [];
   return [
     ...(await checkNameCollisions(config, allowUpdate)),
     ...(await checkSecretGroup(config)),
     ...(await checkMcpGateway(config)),
-    ...(await checkSkills(config))
+    ...(await checkSkills(config)),
+    ...(await checkSnapshotMlRepo(config))
   ];
 }
 

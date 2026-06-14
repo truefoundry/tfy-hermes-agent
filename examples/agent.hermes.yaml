@@ -12,6 +12,8 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
+snapshot_ml_repo: devrel-assistant
+snapshot_artifact_name: devrel-assistant-state-snapshots
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1

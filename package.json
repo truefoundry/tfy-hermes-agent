@@ -10,7 +10,7 @@
     "start": "node control-api/server.mjs",
     "executor": "node runner/turn-runner.mjs",
     "snapshot": "node snapshotter/snapshotter.mjs",
-    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs && node --check snapshotter/snapshotter.mjs && node --check bin/tfy-hermes-agent.mjs"
+    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs && node --check snapshotter/snapshotter.mjs && node --check bin/tfy-hermes-agent.mjs && python3 -m py_compile snapshotter/log_artifact.py"
   },
   "engines": {
     "node": ">=20"
