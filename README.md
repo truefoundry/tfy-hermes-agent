@@ -8,7 +8,7 @@ Hermes on TrueFoundry:
 - `controller/` - HTTP service for health, Slack Events, Slack interactions,
   OpenAI-compatible `/v1/*` routes, and executor callbacks.
 - `executor/` - one-turn TrueFoundry job that runs Hermes.
-- `bin/tfy-hermes-agent.mjs` - validates, compiles, and deploys `hermes.yaml`.
+- `bin/tfy-hermes-agent.mjs` - scaffolds `hermes.yaml` and deploys it.
 - `skills/deploy-hermes-slack-agent/` - full deployment runbook.
 
 State durability lives on the controller's RWO `/data` volume (one
@@ -24,30 +24,49 @@ npx skills add truefoundry/tfy-hermes-agent -y
 
 Add `-g` to install globally, or `-a claude-code` to target a specific agent.
 
-`hermes.yaml` is the source of truth. Compile it to create an agent-named output
-folder:
+`hermes.yaml` is the source of truth. The CLI has two commands:
 
 ```bash
-npx @truefoundry/tfy-hermes-agent validate hermes.yaml --skip-live-checks
-npx @truefoundry/tfy-hermes-agent compile hermes.yaml
-npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
+npx @truefoundry/tfy-hermes-agent init                  # interactive wizard, writes hermes.yaml + slack-app-manifest.json
+npx @truefoundry/tfy-hermes-agent deploy hermes.yaml    # validate + tfy apply (pipes manifests from memory)
 ```
 
-For an agent named `devrel-assistant`, compile writes:
+`deploy` runs live validation against TrueFoundry as its first action and then
+applies four resources in order: SecretGroup scaffold (on first run or
+`--update`), volume PVC, controller Service, executor Job template.
+
+Useful flags:
+
+- `--update` - overwrite an existing deployment of the same name.
+- `--emit-manifests <dir>` - also write the generated YAML files to `<dir>`
+  for inspection. Without this flag, manifests are piped directly to
+  `tfy apply` from memory.
+- `--skip-live-checks` - bypass control-plane validation; only for offline
+  iteration.
+
+For agent `devrel-assistant`, `--emit-manifests ./out` writes:
 
 ```text
-devrel-assistant/
+out/
+  devrel-assistant-secrets.scaffold.yaml
+  devrel-assistant-volume.yaml
   devrel-assistant-controller.yaml
   devrel-assistant-executor.yaml
-  devrel-assistant-secrets.scaffold.yaml
-  devrel-assistant-state.yaml
-  slack-app-manifest.json
+slack-app-manifest.json              (only `init` writes this, in cwd)
 ```
 
 Generated manifests reference secrets through TrueFoundry SecretGroups. Do not
 commit raw secrets or generated customer manifests to this repo.
 
-Optional environment knobs used by the compiler:
+The agent's SecretGroup must contain these five keys filled in the TrueFoundry UI:
+
+- `TFY_API_KEY`
+- `HERMES-RUN-TOKEN-SECRET` (32+ random chars; HMAC master for per-run executor callback tokens)
+- `HERMES-OPENAI-API-KEY` (bearer for `/v1/*` into the controller; fail-closed)
+- `SLACK-BOT-TOKEN`
+- `SLACK-SIGNING-SECRET`
+
+Optional environment knobs used by the CLI:
 
 - `TFY_HOST`, `TFY_API_KEY` - required for live validation and `deploy`.
 - `TFY_SECRET_TENANT` - tenant slug used to infer `host` when `hermes.yaml`

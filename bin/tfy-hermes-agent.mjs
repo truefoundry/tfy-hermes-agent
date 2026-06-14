@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 import YAML from "yaml";
 
 const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
@@ -259,7 +261,6 @@ export function controllerManifest(config) {
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_SLACK_TEAM_ID: config.slackTeamId,
       HERMES_MODEL: config.model,
-      HERMES_GATEWAY_URL: config.gatewayUrl,
       HERMES_EXECUTOR_NAME: r.executor
     },
     ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
@@ -287,7 +288,6 @@ export function executorManifest(config) {
     env: {
       HOME: "/workspace",
       HERMES_HOME: "/workspace/.hermes",
-      HARNESS_CONTROLLER_URL: config.host.url,
       HARNESS_TURN_TIMEOUT_MS: "600000",
       TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
@@ -434,21 +434,6 @@ async function liveValidate(config, { allowUpdate, skipLiveChecks }) {
   await checkCollisions(config, allowUpdate);
 }
 
-function runStdin(command, args, payload) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["pipe", "inherit", "inherit"],
-      env: { ...process.env, TFY_HOST: baseTfyUrl() || process.env.TFY_HOST || "" }
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(" ")} exited with ${code}`));
-    });
-    child.stdin.end(payload);
-  });
-}
-
 export function serializeManifest(manifest, filename) {
   return filename.endsWith(".json")
     ? `${JSON.stringify(manifest, null, 2)}\n`
@@ -472,10 +457,34 @@ async function emitManifestsToDir(items, outDir) {
 }
 
 async function applyManifests(items) {
-  for (const { filename, manifest } of items) {
-    console.log(`tfy apply ${filename}`);
-    await runStdin("tfy", ["apply", "-f", "-"], serializeManifest(manifest, filename));
+  // TrueFoundry CLI's `tfy apply -f` requires a real file path; it does not
+  // read stdin. Stage each manifest in a temp dir, apply, then clean up.
+  const stageDir = path.join(tmpdir(), `tfy-hermes-${randomBytes(6).toString("hex")}`);
+  await mkdir(stageDir, { recursive: true });
+  try {
+    for (const { filename, manifest } of items) {
+      const stagedPath = path.join(stageDir, filename);
+      await writeFile(stagedPath, serializeManifest(manifest, filename));
+      console.log(`tfy apply ${filename}`);
+      await run("tfy", ["apply", "-f", stagedPath]);
+    }
+  } finally {
+    await rm(stageDir, { recursive: true, force: true });
   }
+}
+
+async function run(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: "inherit",
+      env: { ...process.env, TFY_HOST: baseTfyUrl() || process.env.TFY_HOST || "" }
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} ${args.join(" ")} exited with ${code}`));
+    });
+  });
 }
 
 async function prompt(rl, label, { def = "", required = false, validate } = {}) {

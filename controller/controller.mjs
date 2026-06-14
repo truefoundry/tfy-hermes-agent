@@ -407,9 +407,7 @@ async function triggerJob({ run, agent, content, callbackToken }) {
 
   const env = [
     `HARNESS_WORK_B64=${shellQuote(workB64)}`,
-    `HARNESS_CALLBACK_TOKEN=${shellQuote(callbackToken)}`,
-    `HARNESS_RUN_ID=${shellQuote(run.id)}`,
-    `HARNESS_CONTROLLER_URL=${shellQuote(PUBLIC_BASE_URL)}`
+    `HARNESS_CALLBACK_TOKEN=${shellQuote(callbackToken)}`
   ].join(" ");
   const command = `sh -lc ${shellQuote(`${env} node executor/executor.mjs`)}`;
 
