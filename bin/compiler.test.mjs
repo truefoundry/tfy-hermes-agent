@@ -48,8 +48,10 @@ test("volumeManifest provisions one RWO controller PVC at the configured workspa
   assert.equal(manifest.type, "volume");
   assert.equal(manifest.name, "devrel-assistant-data");
   assert.equal(manifest.workspace_fqn, "tfy-aws-use1:sai-ws");
-  assert.equal(manifest.access_mode, "ReadWriteOnce");
-  assert.match(manifest.size, /^\d+Gi$/);
+  assert.equal(manifest.config.type, "dynamic");
+  assert.deepEqual(manifest.config.access_modes, ["ReadWriteOnce"]);
+  assert.equal(manifest.config.storage_class, "default");
+  assert.ok(Number.isFinite(manifest.config.size) && manifest.config.size > 0);
 });
 
 test("controllerManifest builds a single-replica Service pointing at Dockerfile.controller", () => {

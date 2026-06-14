@@ -13,8 +13,12 @@ const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
 const DEFAULT_VOLUME_SIZE_GI = 10;
+// TrueFoundry SecretGroup key names must be alphanumeric, dots, or hyphens —
+// underscores are rejected by the platform. Env-var names with underscores are
+// fine; the controller/executor manifests do the mapping from hyphenated
+// secret key to underscored env var.
 const REQUIRED_SECRET_KEYS = [
-  "TFY_API_KEY",
+  "TFY-API-KEY",
   "HERMES-RUN-TOKEN-SECRET",
   "HERMES-OPENAI-API-KEY",
   "SLACK-BOT-TOKEN",
@@ -222,8 +226,12 @@ export function volumeManifest(config) {
     name: resourceNames(config).volume,
     type: "volume",
     workspace_fqn: config.workspaceFqn,
-    size: `${DEFAULT_VOLUME_SIZE_GI}Gi`,
-    access_mode: "ReadWriteOnce"
+    config: {
+      type: "dynamic",
+      size: DEFAULT_VOLUME_SIZE_GI,
+      storage_class: "default",
+      access_modes: ["ReadWriteOnce"]
+    }
   };
 }
 
@@ -246,7 +254,7 @@ export function controllerManifest(config) {
       STATE_ROOT: "/data",
       PUBLIC_BASE_URL: config.host.url,
       TFY_HOST: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
       HERMES_RUN_TOKEN_SECRET: secretRef(config, "HERMES-RUN-TOKEN-SECRET"),
       HERMES_OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
@@ -291,7 +299,7 @@ export function executorManifest(config) {
       HERMES_HOME: "/workspace/.hermes",
       HARNESS_TURN_TIMEOUT_MS: "600000",
       TFY_HOST: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
+      TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
       OPENAI_BASE_URL: config.gatewayUrl,
       OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       HERMES_MODEL: config.model
