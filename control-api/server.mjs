@@ -941,9 +941,8 @@ async function handleSlackUserMessage(payload) {
   const existingThread = state.slack.threads[slackThreadKey({ teamId, channel, threadTs })];
   const channelType = event.channel_type || "";
   const isDirectMessage = channelType === "im" || channel.startsWith("D");
-  const isThreadReply = Boolean(event.thread_ts && event.thread_ts !== event.ts);
   const isBotMention = event.type === "app_mention";
-  const shouldRespond = Boolean(route.handle || isBotMention || isDirectMessage || (existingThread && isThreadReply));
+  const shouldRespond = Boolean(route.handle || isBotMention || isDirectMessage);
 
   if (!shouldRespond || route.unknownUsergroupMentioned) return;
   if (!text) {
