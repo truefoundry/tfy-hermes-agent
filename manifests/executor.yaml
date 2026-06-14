@@ -1,4 +1,4 @@
-name: ${HERMES_AGENT_HANDLE}-hermes-runner
+name: ${HERMES_AGENT_HANDLE}-executor
 type: job
 workspace_fqn: ${TFY_WORKSPACE_FQN}
 trigger:

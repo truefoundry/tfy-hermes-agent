@@ -78,9 +78,11 @@ Do not use Socket Mode. Do not create Slack user groups.
 Apply generated manifests after validation:
 
 ```text
-<name>-volume.yaml
-<name>-api-service.yaml
-<name>-runner-job.yaml
+<name>-secrets.scaffold.yaml
+<name>-state.yaml
+<name>-controller.yaml
+<name>-executor.yaml
+<name>-snapshotter.yaml
 ```
 
 The SecretGroup scaffold is for user filling and should not overwrite existing

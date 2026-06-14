@@ -1,4 +1,4 @@
-name: hermes-api
+name: your-agent-handle-controller
 type: service
 workspace_fqn: YOUR_CLUSTER:YOUR_WORKSPACE
 image:
@@ -47,7 +47,7 @@ env:
   HERMES_AGENT_SECRET_REFS: ""
   HARNESS_MODEL: openai-main/gpt-5.5
   HERMES_INFERENCE_MODEL: openai-main/gpt-5.5
-  HERMES_JOB_APPLICATION_NAME: your-agent-handle-hermes-runner
+  HERMES_JOB_APPLICATION_NAME: your-agent-handle-executor
   HERMES_SLACK_RUN_TIMEOUT_MS: "120000"
   HERMES_SLACK_STATUS_TEXT: "is thinking..."
   HERMES_SLACK_LOADING_MESSAGES: "Reading the thread|Planning the next step|Running Hermes|Preparing the reply"
@@ -67,4 +67,4 @@ ports:
 mounts:
   - type: volume
     mount_path: /data
-    volume_fqn: tfy-volume://YOUR_CLUSTER:YOUR_WORKSPACE:your-agent-handle-hermes-state
+    volume_fqn: tfy-volume://YOUR_CLUSTER:YOUR_WORKSPACE:your-agent-handle-state

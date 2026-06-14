@@ -5,21 +5,21 @@ description: Onboard a user step by step to create, validate, deploy, and test a
 
 # Deploy Hermes Slack Agent
 
-Use this skill as an onboarding assistant, not as a static checklist. The target architecture is one Slack app, one TrueFoundry API service, one runner job, one state volume, and one isolated SecretGroup per agent.
+Use this skill as an onboarding assistant, not as a static checklist. The target architecture is one Slack app plus five TrueFoundry components per agent: `secrets`, `state`, `controller`, `executor`, and `snapshotter`.
 
 ## What This Flow Must Produce
 
 The end state is not just "a deployment exists". The end state is:
 
 ```text
-hermes.yaml -> compiled TFY manifests -> Slack app -> Hermes runner
+hermes.yaml -> secrets/state/controller/executor/snapshotter manifests -> Slack app -> Hermes executor
 ```
 
 where:
 
 - Slack sends Events API and Interactivity webhooks to the agent API over HTTP.
-- The runner starts Hermes with the manifest MCP servers mounted and discovered.
-- The runner downloads manifest skill FQNs into `$HERMES_HOME/skills` before invoking Hermes.
+- The executor starts Hermes with the manifest MCP servers mounted and discovered.
+- The executor downloads manifest skill FQNs into `$HERMES_HOME/skills` before invoking Hermes.
 - Manifest `name`, `description`, and `instructions` are appended to Hermes' internal prompt as an additional system layer. Do not replace Hermes' native prompt stack, native identity, safety/tool guidance, or `SOUL.md`.
 - The Slack UX shows Hermes activity and a final answer in the same assistant thread.
 
@@ -69,9 +69,9 @@ Maintain this state internally and progress in order. If a value is obvious from
   - `https://<host>/slack/interactions`
 - **OAuth is not required for one workspace / one app.** Users create/install the Slack app manually, then store `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` in the SecretGroup.
 - **Mention-only in channels.** In public/private channels and channel threads, the bot should run only on a direct mention. DMs may respond without mention.
-- **Prompt layering is additive.** `hermes.yaml` instructions should append to Hermes' internal prompt through the runner, not replace `SOUL.md` and not get pasted into the user message as ordinary context.
-- **MCP servers are URLs only.** They must be reachable through the TrueFoundry MCP Gateway. The runner derives toolset names, writes Hermes MCP config, runs discovery synchronously, and passes those toolsets into oneshot.
-- **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The runner resolves presigned tarball URLs with `TFY_API_KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
+- **Prompt layering is additive.** `hermes.yaml` instructions should append to Hermes' internal prompt through the executor, not replace `SOUL.md` and not get pasted into the user message as ordinary context.
+- **MCP servers are URLs only.** They must be reachable through the TrueFoundry MCP Gateway. The executor derives toolset names, writes Hermes MCP config, runs discovery synchronously, and passes those toolsets into oneshot.
+- **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The executor resolves presigned tarball URLs with `TFY_API_KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
 - **Slack streaming does not need WebSockets.** Use Slack assistant/thread APIs over HTTP. If provider/Hermes output is buffered, Slack still shows activity first and appends the final answer when ready.
 - **A thinking card without a final answer is a bug.** Check Slack stream finalization, final markdown text formatting, and duplicate final-send paths before blaming the model.
 - **Duplicate runs usually mean duplicate Slack event routing.** Check event id dedupe, bot-message ignores, assistant-thread follow-up handling, and whether both mention and message handlers are firing for the same Slack event.
@@ -93,24 +93,24 @@ hermes.yaml
   -> SecretGroup manually created/filled
   -> live validation
   -> compile TFY manifests
-  -> apply SecretGroup + volume + API service
+  -> apply secrets + state + controller
   -> wait for API health
   -> configure/verify Slack Event + Interactivity URLs
-  -> apply/update runner job
+  -> apply/update executor + snapshotter
   -> first Slack mention test
 ```
 
 Parallel-safe:
 
 - Generate Slack manifest while preparing the SecretGroup.
-- Create volume and SecretGroup before the API service exists.
+- Create secrets and state before the controller service exists.
 - Compile manifests anytime after `hermes.yaml` is valid.
 
 Serial requirements:
 
 - Slack URL verification requires deployed API health.
-- Runner test requires API service, SecretGroup values, and runner job version deployed.
-- MCP/skill verification requires runner execution, not just compiler validation.
+- Executor test requires controller service, SecretGroup values, and executor job version deployed.
+- MCP/skill verification requires executor execution, not just compiler validation.
 
 ## Conversation Flow
 
@@ -201,7 +201,7 @@ Secret key purpose:
 
 - `SLACK-BOT-TOKEN`: Slack bot token from the installed Slack app.
 - `SLACK-SIGNING-SECRET`: Slack signing secret from the Slack app.
-- `HARNESS-INTERNAL-TOKEN`: private shared secret between API service and runner callbacks.
+- `HARNESS-INTERNAL-TOKEN`: private shared secret between controller service and executor callbacks.
 - `TFY_GATEWAY_URL`: OpenAI-compatible model gateway URL.
 - `TFY_API_KEY`: one TrueFoundry API key used for platform calls, MCP/skill resolution, model gateway calls, and `/v1/*` Bearer auth.
 - `TFY_HOST`: TrueFoundry tenant/control-plane host, kept with the agent for platform calls and future migrations.
@@ -220,7 +220,7 @@ If credentials are missing, stop with one task:
 
 Live validation should confirm:
 
-- no API or job deployment name collision, unless `--update` is intended
+- no controller, executor, or snapshotter name collision, unless `--update` is intended
 - no host collision
 - SecretGroup exists and contains required keys
 - MCP server URLs are visible through TrueFoundry MCP Gateway
@@ -236,7 +236,7 @@ Deploy only after live validation passes:
 npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
 ```
 
-Use `--update` only when the user has confirmed they want to replace the running deployment. `--update` redeploys the API service and runner job in-place and can interrupt in-flight Slack requests:
+Use `--update` only when the user has confirmed they want to replace the running deployment. `--update` redeploys the controller service and executor job in-place and can interrupt in-flight Slack requests:
 
 ```bash
 npx @truefoundry/tfy-hermes-agent deploy hermes.yaml --update
@@ -245,10 +245,11 @@ npx @truefoundry/tfy-hermes-agent deploy hermes.yaml --update
 Expected generated resources:
 
 ```text
-<name>-hermes-api
-<name>-hermes-runner
-<name>-hermes-state
+<name>-controller
+<name>-executor
 <secrets>
+<name>-state
+<name>-snapshotter
 ```
 
 The deployment builds from the `main` branch of this package by default. Only override `HERMES_SOURCE_REF` if the user is explicitly testing an unmerged branch, and unset it after the test:
@@ -316,17 +317,17 @@ Ask the user to send one real Slack mention:
 
 Then ask for only the result. If it fails, troubleshoot based on the symptom:
 
-While the user sends the first request, monitor API and runner logs or run events. Confirm the Slack webhook arrives, exactly one run is created, the runner starts, and the final Slack response is posted.
+While the user sends the first request, monitor controller/executor logs or run events. Confirm the Slack webhook arrives, exactly one run is created, the executor starts, and the final Slack response is posted.
 
 - Slack URL verification fails: confirm API health, `/slack/health`, and same-app signing secret.
 - Slack auth error: reinstall the app and refresh `SLACK-BOT-TOKEN` in the SecretGroup.
 - No channel response: invite the Slack app to the channel and confirm Slack scopes.
 - Agent responds without a mention in a channel: fix routing so only DMs or directly-mentioned channel messages trigger runs.
-- Run starts but does not complete: inspect `<name>-hermes-runner` job logs and gateway credentials.
+- Run starts but does not complete: inspect `<name>-executor` job logs and gateway credentials.
 - Thinking completes but no final output: inspect Slack assistant stream completion and final message chunk formatting.
 - Two runs for one Slack message: inspect Slack event dedupe and ensure bot/self messages are ignored.
-- Agent says MCP tools are missing: verify `mcp_servers` in `hermes.yaml`, runner diagnostic toolsets, and Hermes MCP discovery before oneshot.
-- Agent ignores personality/instructions: verify the runner is appending manifest instructions as an ephemeral system prompt instead of only including them in the user message.
+- Agent says MCP tools are missing: verify `mcp_servers` in `hermes.yaml`, executor diagnostic toolsets, and Hermes MCP discovery before oneshot.
+- Agent ignores personality/instructions: verify the executor is appending manifest instructions as an ephemeral system prompt instead of only including them in the user message.
 - MCP validation fails: use only MCP server URLs registered and reachable through TrueFoundry MCP Gateway.
 - Skill validation fails: use full skill FQNs like `agent-skill:<tenant>/<repo>/<skill>:<version>`.
 
@@ -337,7 +338,7 @@ The onboarding is complete only when all are true:
 - `hermes.yaml` exists in the user's project.
 - Local and live validation pass.
 - Slack app is created, installed, and backed by the per-agent SecretGroup.
-- TrueFoundry API service and runner are deployed.
+- TrueFoundry secrets, state, controller, executor, and snapshotter are deployed.
 - `/api/health`, `/slack/health`, and `/v1/models` respond.
 - Slack Event and Interactivity URLs are verified.
 - A real Slack mention receives a successful Hermes response.

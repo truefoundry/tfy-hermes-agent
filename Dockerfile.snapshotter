@@ -1,0 +1,11 @@
+FROM node:22-bookworm-slim
+
+WORKDIR /opt/tfy-hermes-agent
+ENV NODE_ENV=production
+
+COPY package.json ./
+COPY snapshotter ./snapshotter
+
+RUN mkdir -p /data/state /data/snapshots
+
+CMD ["node", "snapshotter/snapshotter.mjs"]

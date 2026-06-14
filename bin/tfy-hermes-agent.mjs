@@ -140,10 +140,11 @@ async function readHermesConfig(file) {
 
 function names(config) {
   return {
-    secretGroup: config.secrets,
-    volume: `${config.name}-hermes-state`,
-    api: `${config.name}-hermes-api`,
-    job: `${config.name}-hermes-runner`
+    secrets: config.secrets,
+    state: `${config.name}-state`,
+    controller: `${config.name}-controller`,
+    executor: `${config.name}-executor`,
+    snapshotter: `${config.name}-snapshotter`
   };
 }
 
@@ -184,7 +185,7 @@ function image(dockerfilePath, command) {
   return manifest;
 }
 
-function secretGroupManifest(config) {
+function secretsManifest(config) {
   return {
     name: config.secrets,
     type: "secret-group",
@@ -200,9 +201,9 @@ function secretGroupManifest(config) {
   };
 }
 
-function volumeManifest(config) {
+function stateManifest(config) {
   return {
-    name: names(config).volume,
+    name: names(config).state,
     type: "volume",
     workspace_fqn: config.workspaceFqn,
     config: {
@@ -213,10 +214,10 @@ function volumeManifest(config) {
   };
 }
 
-function apiManifest(config) {
+function controllerManifest(config) {
   const resource = names(config);
   return {
-    name: resource.api,
+    name: resource.controller,
     type: "service",
     workspace_fqn: config.workspaceFqn,
     image: image("Dockerfile.control-api"),
@@ -258,7 +259,7 @@ function apiManifest(config) {
       HERMES_AGENT_SECRET_REFS: "",
       HARNESS_MODEL: config.model,
       HERMES_INFERENCE_MODEL: config.model,
-      HERMES_JOB_APPLICATION_NAME: resource.job,
+      HERMES_JOB_APPLICATION_NAME: resource.executor,
       HERMES_SLACK_RUN_TIMEOUT_MS: "120000",
       HERMES_SLACK_STATUS_TEXT: "is thinking...",
       HERMES_SLACK_LOADING_MESSAGES: "Reading the thread|Planning the next step|Running Hermes|Preparing the reply",
@@ -272,16 +273,16 @@ function apiManifest(config) {
       HARNESS_SANDBOX_IDLE_TIMEOUT_SECONDS: "900"
     },
     ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
-    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.volume}` }],
+    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }],
     liveness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
     readiness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
     rollout_strategy: { type: "rolling_update", max_surge_percentage: 0, max_unavailable_percentage: 100 }
   };
 }
 
-function runnerManifest(config) {
+function executorManifest(config) {
   return {
-    name: names(config).job,
+    name: names(config).executor,
     type: "job",
     workspace_fqn: config.workspaceFqn,
     trigger: { type: "manual" },
@@ -320,6 +321,33 @@ function runnerManifest(config) {
       HARNESS_RUNTIME_ADAPTER: "harness-runtime-router",
       HARNESS_SANDBOX_PROVIDER: "daytona"
     }
+  };
+}
+
+function snapshotterManifest(config) {
+  const resource = names(config);
+  return {
+    name: resource.snapshotter,
+    type: "job",
+    workspace_fqn: config.workspaceFqn,
+    trigger: { type: "manual" },
+    concurrency_limit: 1,
+    retries: 1,
+    image: image("Dockerfile.snapshotter", "node snapshotter/snapshotter.mjs"),
+    resources: {
+      cpu_request: 0.1,
+      cpu_limit: 0.5,
+      memory_request: 256,
+      memory_limit: 512,
+      ephemeral_storage_request: 1000,
+      ephemeral_storage_limit: 2000
+    },
+    env: {
+      HARNESS_STATE_DIR: "/data/state",
+      HERMES_SNAPSHOT_DIR: "/data/snapshots",
+      HERMES_SNAPSHOT_RETAIN_COUNT: "50"
+    },
+    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }]
   };
 }
 
@@ -390,10 +418,11 @@ function slackManifest(config) {
 
 function allManifests(config) {
   return {
-    [`${config.name}-secret-group.scaffold.yaml`]: secretGroupManifest(config),
-    [`${config.name}-volume.yaml`]: volumeManifest(config),
-    [`${config.name}-api-service.yaml`]: apiManifest(config),
-    [`${config.name}-runner-job.yaml`]: runnerManifest(config),
+    [`${config.name}-secrets.scaffold.yaml`]: secretsManifest(config),
+    [`${config.name}-state.yaml`]: stateManifest(config),
+    [`${config.name}-controller.yaml`]: controllerManifest(config),
+    [`${config.name}-executor.yaml`]: executorManifest(config),
+    [`${config.name}-snapshotter.yaml`]: snapshotterManifest(config),
     "slack-app-manifest.json": slackManifest(config)
   };
 }
@@ -439,15 +468,16 @@ async function checkNameCollisions(config, allowUpdate) {
   const resource = names(config);
   const body = await tfyFetch(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`);
   const rows = Array.isArray(body.data) ? body.data : [];
-  const existing = rows.filter((row) => [resource.api, resource.job].includes(row.name || row.applicationName));
+  const applicationNames = [resource.controller, resource.executor, resource.snapshotter];
+  const existing = rows.filter((row) => applicationNames.includes(row.name || row.applicationName));
   const hostOwners = rows.filter((row) => {
     const ports = row.manifest?.ports || row.deployment?.manifest?.ports || [];
     return Array.isArray(ports) && ports.some((port) => port?.host === config.host.hostname);
   });
   if (existing.length && !allowUpdate) {
-    throw new Error(`deployment name collision: ${existing.map((row) => row.name || row.applicationName).join(", ")}. Use --update to update existing deployments.`);
+    throw new Error(`component name collision: ${existing.map((row) => row.name || row.applicationName).join(", ")}. Use --update to update existing deployments.`);
   }
-  const unexpectedHostOwners = hostOwners.filter((row) => ![resource.api, resource.job].includes(row.name || row.applicationName));
+  const unexpectedHostOwners = hostOwners.filter((row) => !applicationNames.includes(row.name || row.applicationName));
   if (unexpectedHostOwners.length) {
     throw new Error(`host ${config.host.hostname} is already used by: ${unexpectedHostOwners.map((row) => row.name || row.applicationName).join(", ")}`);
   }
@@ -539,7 +569,13 @@ async function deploy(config, outDir, flags) {
   if (!liveChecksAvailable()) throw new Error("deploy requires TFY_BASE_URL/TFY_HOST and TFY_API_KEY");
   await validate(config, { allowUpdate: Boolean(flags.update) });
   const files = await compile(config, outDir);
-  const deployFiles = files.filter((file) => !file.includes("secret-group.scaffold") && !file.includes("slack-app-manifest"));
+  const filesByName = new Map(files.map((file) => [path.basename(file), file]));
+  const deployFiles = [
+    `${config.name}-state.yaml`,
+    `${config.name}-controller.yaml`,
+    `${config.name}-executor.yaml`,
+    `${config.name}-snapshotter.yaml`
+  ].map((name) => filesByName.get(name)).filter(Boolean);
   for (const file of deployFiles) await run("tfy", ["apply", "-f", file]);
   return deployFiles;
 }

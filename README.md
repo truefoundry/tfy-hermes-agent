@@ -2,8 +2,8 @@
 
 Reusable TrueFoundry deployment package for Hermes Agent.
 
-This repo keeps the deployment wrapper small: an OpenAI-compatible Hermes API,
-a per-turn job runner, Dockerfiles, and TrueFoundry YAML templates. It does not
+This repo keeps the deployment wrapper small: an OpenAI-compatible controller,
+per-turn executor, state snapshotter, Dockerfiles, and TrueFoundry YAML templates. It does not
 vendor the full upstream Hermes codebase. The runtime image installs
 `hermes-agent` at build time.
 
@@ -16,10 +16,12 @@ settings.
 
 ## Included
 
-- `control-api/` - OpenAI-compatible `/v1/responses` and
+- `control-api/` - controller service with OpenAI-compatible `/v1/responses` and
   `/v1/chat/completions` API plus internal control routes for agents, sessions,
   runs, MCP visibility, and run completion callbacks.
-- `runner/` - TrueFoundry Job entrypoint that executes one `hermes -z` turn.
+- `runner/` - executor job entrypoint that executes one `hermes -z` turn.
+- `snapshotter/` - snapshotter job entrypoint that snapshots persisted
+  controller state.
 - `manifests/` - reusable TrueFoundry YAML templates.
 - `skills/deploy-hermes-slack-agent/` - repo-local operator skill for guiding a
   user through manifest generation, Slack app setup, secrets, deploy, health,
@@ -40,7 +42,7 @@ settings.
 - The control API's `/v1/*` endpoints require `Authorization: Bearer
   $HERMES_OPENAI_API_KEY` when that env is set.
 - The control API's `/api/internal/*` callbacks require `Authorization: Bearer
-  $HARNESS_INTERNAL_TOKEN`; the turn-runner reads the same token from its env.
+  $HARNESS_INTERNAL_TOKEN`; the executor reads the same token from its env.
 - MCP servers must be visible through TrueFoundry MCP Gateway with the configured
   token before they can be attached by name.
 
@@ -51,7 +53,7 @@ export TFY_WORKSPACE_FQN=tfy-ea-dev-eo-az:sai-ws
 export TFY_SECRET_TENANT=tfy-eo
 export TFY_BASE_URL=https://tfy-eo.truefoundry.cloud
 export HERMES_AGENT_SECRET_GROUP=devrel-assistant-hermes-secrets
-export HERMES_API_HOST=hermes-api-sai-ws.ml.tfy-eo.truefoundry.cloud
+export HERMES_API_HOST=controller-sai-ws.ml.tfy-eo.truefoundry.cloud
 export HERMES_REPO_URL=https://github.com/truefoundry/tfy-hermes-agent
 export HERMES_SOURCE_REF=main
 
@@ -78,7 +80,7 @@ import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.HERMES_API_KEY || "unused",
-  baseURL: "https://hermes-api-sai-ws.ml.tfy-eo.truefoundry.cloud/v1"
+  baseURL: "https://controller-sai-ws.ml.tfy-eo.truefoundry.cloud/v1"
 });
 
 const response = await client.responses.create({
@@ -99,7 +101,7 @@ Supported endpoints:
 
 The adapter supports text-only synchronous, background, and streaming calls.
 `stream: true` returns Server-Sent Events for both `POST /v1/responses` and
-`POST /v1/chat/completions`. Streaming uses Hermes stdout deltas when the runner
+`POST /v1/chat/completions`. Streaming uses Hermes stdout deltas when the executor
 emits them; if the provider buffers output until the end, the adapter emits the
 final result as a single text delta before the completed event. Use
 `background: true` with `POST /v1/responses` to create an async run and poll
@@ -109,7 +111,7 @@ Synchronous SDK calls wait up to `HERMES_OPENAI_SYNC_TIMEOUT_MS` milliseconds
 for the TrueFoundry job to complete. The default is `120000`.
 
 The `/api/...` routes remain available for operational workflows and for the
-turn runner callback, but new clients should use `/v1/responses` or
+executor callback, but new clients should use `/v1/responses` or
 `/v1/chat/completions` by default.
 
 ## Standalone Slack Agent UX
@@ -123,9 +125,9 @@ Slack agent experience:
 - `/slack/health` - reports whether Slack secrets are configured.
 
 The default architecture is one Slack app per Hermes agent. Each standalone
-agent deployment gets its own TrueFoundry API service, turn-runner job, volume,
-and Slack app. The Slack bot's display name is the mention handle users talk to
-in Slack.
+agent deployment gets its own TrueFoundry secrets, state, controller, executor,
+snapshotter, and Slack app. The Slack bot's display name is the mention handle
+users talk to in Slack.
 
 When configured, Hermes responds to that app's bot mentions and assistant DM
 messages in Slack threads. The adapter sets the thread title, shows a Slack
@@ -143,7 +145,7 @@ Example:
 @devrel-assistant summarize this launch thread
 ```
 
-Runtime identity is configured by environment variables on the `hermes-api`
+Runtime identity is configured by environment variables on the `controller`
 service:
 
 ```yaml
@@ -166,7 +168,7 @@ Slack setup:
 5. Enable the app's Agents & AI Apps experience in Slack app settings.
 6. Store the Slack bot token, signing secret, and gateway credentials in the
    agent-specific SecretGroup.
-7. Add these environment variables to the `hermes-api` service:
+7. Add these environment variables to the `controller` service:
 
 ```yaml
 TFY_GATEWAY_BASE_URL: tfy-secret://YOUR_TENANT:YOUR_AGENT_SECRET_GROUP:TFY_GATEWAY_URL
@@ -212,7 +214,7 @@ HERMES_LOCAL_RUN_RESULT="Dry-run Hermes response"
 calling Slack. `HERMES_LOCAL_RUN_RESULT` completes runs locally without
 triggering a TrueFoundry job.
 
-Streaming behavior: the turn runner forwards Hermes stdout deltas back to the
+Streaming behavior: the executor forwards Hermes stdout deltas back to the
 control API while the job is running, and the Slack adapter appends those deltas
 to the active Slack stream. If the Hermes CLI or model provider buffers output
 until the end, Slack still shows status/task progress immediately and then
@@ -224,10 +226,11 @@ The target project-local input is `examples/agent.hermes.yaml`: one flat file
 that describes the agent identity, instructions, skill FQNs, MCP Gateway URLs,
 workspace, host, and per-agent SecretGroup. The compiler expands that into:
 
-- a per-agent SecretGroup
-- a TrueFoundry volume
-- a `hermes-api` service
-- a `hermes-runner` job
+- a `secrets` SecretGroup scaffold
+- a `state` volume
+- a `controller` service
+- an `executor` job
+- a `snapshotter` job
 - a per-agent Slack app manifest
 
 Example:
@@ -258,8 +261,8 @@ mcp_servers:
   - https://mcp-gateway.example.com/servers/slack
 ```
 
-The per-agent SecretGroup isolates each deployment. Both `hermes-api` and
-`hermes-runner` reference the same group, so deleting or rotating one
+The per-agent SecretGroup isolates each deployment. Both `controller` and
+`executor` reference the same group, so deleting or rotating one
 agent's secrets does not touch any other agent:
 
 ```yaml
@@ -275,17 +278,17 @@ secrets:
   SLACK-SIGNING-SECRET: "replace-in-truefoundry-only"
 ```
 
-`TFY_API_KEY` is the single TrueFoundry key used by the API service and runner
+`TFY_API_KEY` is the single TrueFoundry key used by the controller service and executor
 for platform calls, MCP/skill resolution, model gateway calls, and `/v1/*`
 Bearer auth. `TFY_GATEWAY_URL` is the OpenAI-compatible model URL. `TFY_HOST`
 is the TrueFoundry tenant/control-plane host and is stored with the agent so the
 runtime does not have to infer it later.
 
-`HARNESS-INTERNAL-TOKEN` authenticates the turn-runner to the control API's
+`HARNESS-INTERNAL-TOKEN` authenticates the executor to the control API's
 `/api/internal/*` callbacks. The compiler generates a random placeholder for
 new SecretGroup scaffolds; keep the generated value unless rotating the agent.
 
-At runtime, the generated turn-runner makes the YAML entries operational before
+At runtime, the generated executor makes the YAML entries operational before
 starting Hermes:
 
 - `name`, `description`, and `instructions` are appended to Hermes' internal
@@ -313,4 +316,5 @@ Compiler validation:
 - validates MCP entries as URLs
 - with TrueFoundry credentials, checks deployment name collisions, required
   SecretGroup keys, and MCP Gateway visibility
-- refuses to deploy over existing API/job names unless `--update` is passed
+- refuses to deploy over existing controller/executor/snapshotter names unless
+  `--update` is passed

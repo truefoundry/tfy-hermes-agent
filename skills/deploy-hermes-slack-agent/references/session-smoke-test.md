@@ -61,7 +61,7 @@ While they test, monitor API/run logs and confirm:
 
 - Slack webhook reaches `/slack/events`
 - exactly one run is created for the user message
-- runner job starts
+- executor job starts
 - Hermes activity appears
 - final answer posts in the Slack thread
 
