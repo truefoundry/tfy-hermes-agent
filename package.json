@@ -6,11 +6,23 @@
   "bin": {
     "tfy-hermes-agent": "bin/tfy-hermes-agent.mjs"
   },
+  "files": [
+    "AGENTS.md",
+    "Dockerfile.controller",
+    "Dockerfile.executor",
+    "Dockerfile.snapshotter",
+    "bin/",
+    "controller/",
+    "examples/",
+    "executor/",
+    "skills/",
+    "snapshotter/snapshotter.py"
+  ],
   "scripts": {
-    "start": "node control-api/server.mjs",
-    "executor": "node runner/turn-runner.mjs",
-    "snapshot": "node snapshotter/snapshotter.mjs",
-    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs && node --check snapshotter/snapshotter.mjs && node --check bin/tfy-hermes-agent.mjs && python3 -m py_compile snapshotter/log_artifact.py"
+    "start": "node controller/controller.mjs",
+    "executor": "node executor/executor.mjs",
+    "snapshot": "python3 snapshotter/snapshotter.py",
+    "check": "node --check controller/controller.mjs && node --check executor/executor.mjs && node --check bin/tfy-hermes-agent.mjs && python3 -m py_compile snapshotter/snapshotter.py"
   },
   "engines": {
     "node": ">=20"

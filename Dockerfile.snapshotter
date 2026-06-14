@@ -1,17 +1,12 @@
 FROM python:3.13-slim-bookworm
 
 WORKDIR /opt/tfy-hermes-agent
-ENV NODE_ENV=production \
-    PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1
 
-COPY package.json ./
 COPY snapshotter ./snapshotter
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    python -m pip install --no-cache-dir --upgrade pip && \
+RUN python -m pip install --no-cache-dir --upgrade pip && \
     python -m pip install --no-cache-dir truefoundry && \
     mkdir -p /data/state /data/snapshots
 
-CMD ["node", "snapshotter/snapshotter.mjs"]
+CMD ["python", "snapshotter/snapshotter.py"]

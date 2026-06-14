@@ -4,9 +4,9 @@ WORKDIR /opt/tfy-hermes-agent
 ENV NODE_ENV=production
 
 COPY package.json ./
-COPY control-api ./control-api
+COPY controller ./controller
 
 RUN mkdir -p /data/state
 
 EXPOSE 8787
-CMD ["node", "control-api/server.mjs"]
+CMD ["node", "controller/controller.mjs"]

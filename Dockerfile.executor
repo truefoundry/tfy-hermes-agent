@@ -12,6 +12,6 @@ RUN apt-get update && \
 
 WORKDIR /opt/tfy-hermes-agent
 COPY package.json ./
-COPY runner ./runner
+COPY executor ./executor
 
-CMD ["node", "runner/turn-runner.mjs"]
+CMD ["node", "executor/executor.mjs"]

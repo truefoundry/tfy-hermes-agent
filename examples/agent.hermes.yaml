@@ -10,6 +10,8 @@ instructions: |
 
 model: openai-main/gpt-5.5
 
+gateway_url: https://your-openai-compatible-gateway/v1
+
 secrets: devrel-assistant-hermes-secrets
 
 snapshot:

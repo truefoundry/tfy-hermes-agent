@@ -9,9 +9,7 @@ const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
 const REQUIRED_SECRET_KEYS = [
-  "TFY_GATEWAY_URL",
   "TFY_API_KEY",
-  "TFY_HOST",
   "HARNESS-INTERNAL-TOKEN",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
@@ -21,11 +19,10 @@ function usage() {
   return [
     "Usage:",
     "  tfy-hermes-agent validate <hermes.yaml> [--update] [--skip-live-checks]",
-    "  tfy-hermes-agent compile <hermes.yaml> [--out .hermes-rendered]",
-    "  tfy-hermes-agent slack-manifest <hermes.yaml> [--format json|yaml]",
-    "  tfy-hermes-agent deploy <hermes.yaml> [--out .hermes-rendered] [--update]",
+    "  tfy-hermes-agent compile <hermes.yaml> [--out <agent-name>]",
+    "  tfy-hermes-agent deploy <hermes.yaml> [--out <agent-name>] [--update]",
     "",
-    "Live checks and deploy require TFY_BASE_URL/TFY_HOST and TFY_API_KEY."
+    "Live checks and deploy require TFY_HOST and TFY_API_KEY."
   ].join("\n");
 }
 
@@ -105,7 +102,7 @@ function resolveHost(value, name, workspaceFqn) {
   if (String(value || "").trim()) return normalizeHost(value);
   const tenant = tenantFromEnv();
   if (!tenant) {
-    throw new Error("host is required unless TFY_HOST, TFY_BASE_URL, or TFY_SECRET_TENANT is set for inference");
+    throw new Error("host is required unless TFY_HOST or TFY_SECRET_TENANT is set for inference");
   }
   return normalizeHost(`https://${name}-${workspaceName(workspaceFqn)}.ml.${tenant}.truefoundry.cloud`);
 }
@@ -134,6 +131,19 @@ function normalizeMcpUrl(value) {
     throw new Error(`mcp_servers entry is not a valid URL: ${value}`);
   }
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(`mcp_servers URL must use http or https: ${value}`);
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function normalizeGatewayUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("gateway_url is required unless OPENAI_BASE_URL is set");
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("gateway_url must be a valid OpenAI-compatible HTTP URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("gateway_url must use http or https");
   return parsed.toString().replace(/\/$/, "");
 }
 
@@ -184,6 +194,7 @@ async function readHermesConfig(file) {
 
   const snapshot = normalizeSnapshot(config.snapshot);
   const slack = normalizeSlackAccess(config.slack);
+  const gatewayUrl = normalizeGatewayUrl(config.gateway_url || process.env.OPENAI_BASE_URL);
 
   return {
     name,
@@ -193,6 +204,7 @@ async function readHermesConfig(file) {
     description: String(config.description || "").trim(),
     instructions: String(config.instructions || "").trim(),
     model: String(config.model || DEFAULT_MODEL).trim(),
+    gatewayUrl,
     secrets,
     snapshot,
     slack,
@@ -220,7 +232,7 @@ function csv(values) {
 }
 
 function baseTfyUrl() {
-  return (process.env.TFY_BASE_URL || process.env.TFY_HOST || "").replace(/\/+$/, "");
+  return (process.env.TFY_HOST || "").replace(/\/+$/, "");
 }
 
 function controlPlaneUrl(config) {
@@ -254,9 +266,7 @@ function secretsManifest(config) {
     type: "secret-group",
     workspace_fqn: config.workspaceFqn,
     secrets: {
-      TFY_GATEWAY_URL: "https://your-openai-compatible-gateway/v1",
       TFY_API_KEY: "replace-in-truefoundry-only",
-      TFY_HOST: controlPlaneUrl(config),
       "HARNESS-INTERNAL-TOKEN": randomBytes(32).toString("hex"),
       "SLACK-BOT-TOKEN": "xoxb-replace-in-truefoundry-only",
       "SLACK-SIGNING-SECRET": "replace-in-truefoundry-only"
@@ -283,7 +293,7 @@ function controllerManifest(config) {
     name: resource.controller,
     type: "service",
     workspace_fqn: config.workspaceFqn,
-    image: image("Dockerfile.control-api"),
+    image: image("Dockerfile.controller"),
     resources: {
       cpu_request: 0.25,
       cpu_limit: 1,
@@ -294,24 +304,13 @@ function controllerManifest(config) {
     },
     replicas: 1,
     env: {
-      NODE_ENV: "production",
-      PORT: "8787",
-      HOME: "/data/home",
       HARNESS_STATE_DIR: "/data/state",
       PUBLIC_BASE_URL: config.host.url,
-      HARNESS_API_URL: config.host.url,
-      TFY_BASE_URL: secretRef(config, "TFY_HOST"),
-      TFY_HOST: secretRef(config, "TFY_HOST"),
-      TFY_SERVICE_API_URL: secretRef(config, "TFY_HOST"),
+      TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
-      TFY_GATEWAY_API_KEY: secretRef(config, "TFY_API_KEY"),
       HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
-      HERMES_OPENAI_API_KEY: secretRef(config, "TFY_API_KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
       SLACK_SIGNING_SECRET: secretRef(config, "SLACK-SIGNING-SECRET"),
-      TFY_SECRET_TENANT: config.tenant,
       TFY_WORKSPACE_FQN: config.workspaceFqn,
       HERMES_AGENT_HANDLE: config.name,
       HERMES_AGENT_NAME: config.name,
@@ -319,23 +318,10 @@ function controllerManifest(config) {
       HERMES_AGENT_INSTRUCTIONS: config.instructions,
       HERMES_AGENT_SKILLS: csv(config.skills),
       HERMES_AGENT_MCP_SERVERS: csv(config.mcpServers),
-      HERMES_AGENT_SECRET_REFS: "",
       HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.channels),
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.users),
-      HARNESS_MODEL: config.model,
-      HERMES_INFERENCE_MODEL: config.model,
-      HERMES_JOB_APPLICATION_NAME: resource.executor,
-      HERMES_SLACK_RUN_TIMEOUT_MS: "120000",
-      HERMES_SLACK_STATUS_TEXT: "is thinking...",
-      HERMES_SLACK_LOADING_MESSAGES: "Reading the thread|Planning the next step|Running Hermes|Preparing the reply",
-      HERMES_SLACK_STREAM_CHUNK_DELAY_MS: "120",
-      HERMES_SLACK_CREATE_USERGROUPS: "false",
-      HERMES_SLACK_REQUIRE_CHANNEL_DEPLOYMENT: "false",
-      HARNESS_EXECUTION_RUNNER: "truefoundry-jobs",
-      HARNESS_CREDENTIAL_BROKER: "truefoundry-secretgroup",
-      HARNESS_SANDBOX_PROVIDER: "daytona",
-      HARNESS_SANDBOX_SCOPE: "agent-session",
-      HARNESS_SANDBOX_IDLE_TIMEOUT_SECONDS: "900"
+      HERMES_MODEL: config.model,
+      HERMES_EXECUTOR_NAME: resource.executor
     },
     ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }],
@@ -353,7 +339,7 @@ function executorManifest(config) {
     trigger: { type: "manual" },
     concurrency_limit: 20,
     retries: 0,
-    image: image("Dockerfile.turn-runner", "node runner/turn-runner.mjs"),
+    image: image("Dockerfile.executor", "node executor/executor.mjs"),
     resources: {
       cpu_request: 0.1,
       cpu_limit: 2,
@@ -365,26 +351,14 @@ function executorManifest(config) {
     env: {
       HOME: "/workspace",
       HERMES_HOME: "/workspace/.hermes",
-      HARNESS_WORKSPACE_ROOT: "/workspace",
-      HARNESS_CONTROL_API_URL: config.host.url,
+      HARNESS_CONTROLLER_URL: config.host.url,
       HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
       HARNESS_TURN_TIMEOUT_MS: "600000",
-      TFY_SERVICE_API_URL: secretRef(config, "TFY_HOST"),
-      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
-      TFY_GATEWAY_BASE_URL: secretRef(config, "TFY_GATEWAY_URL"),
+      TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_GATEWAY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_SECRET_TENANT: config.tenant,
-      TFY_WORKSPACE_FQN: config.workspaceFqn,
-      HERMES_INFERENCE_MODEL: config.model,
-      HERMES_AGENT_SKILLS: csv(config.skills),
-      HERMES_AGENT_MCP_SERVERS: csv(config.mcpServers),
-      HARNESS_EXECUTION_RUNNER: "truefoundry-jobs",
-      HARNESS_PLATFORM_PROVIDER: "truefoundry",
-      HARNESS_EXECUTION_PROVIDER: "harness-runtime-router",
-      HARNESS_RUNTIME_ADAPTER: "harness-runtime-router",
-      HARNESS_SANDBOX_PROVIDER: "daytona"
+      OPENAI_BASE_URL: config.gatewayUrl,
+      OPENAI_API_KEY: secretRef(config, "TFY_API_KEY"),
+      HERMES_MODEL: config.model
     }
   };
 }
@@ -398,7 +372,7 @@ function snapshotterManifest(config) {
     trigger: { type: "manual" },
     concurrency_limit: 1,
     retries: 1,
-    image: image("Dockerfile.snapshotter", "node snapshotter/snapshotter.mjs"),
+    image: image("Dockerfile.snapshotter", "python snapshotter/snapshotter.py"),
     resources: {
       cpu_request: 0.1,
       cpu_limit: 0.5,
@@ -415,11 +389,8 @@ function snapshotterManifest(config) {
       HERMES_SNAPSHOT_ML_REPO: config.snapshot.mlRepo,
       HERMES_SNAPSHOT_ARTIFACT_NAME: config.snapshot.artifactName,
       HERMES_AGENT_HANDLE: config.name,
-      TFY_BASE_URL: secretRef(config, "TFY_HOST"),
-      TFY_HOST: secretRef(config, "TFY_HOST"),
+      TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_PLATFORM_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_SECRET_TENANT: config.tenant,
       TFY_WORKSPACE_FQN: config.workspaceFqn
     },
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }]
@@ -523,7 +494,7 @@ function liveChecksAvailable() {
 }
 
 async function tfyFetch(apiPath, options = {}) {
-  if (!liveChecksAvailable()) throw new Error("TFY_BASE_URL/TFY_HOST and TFY_API_KEY are required for live checks");
+  if (!liveChecksAvailable()) throw new Error("TFY_HOST and TFY_API_KEY are required for live checks");
   const res = await fetch(`${baseTfyUrl()}${apiPath}`, {
     ...options,
     headers: {
@@ -654,7 +625,7 @@ function run(command, args) {
 }
 
 async function deploy(config, outDir, flags) {
-  if (!liveChecksAvailable()) throw new Error("deploy requires TFY_BASE_URL/TFY_HOST and TFY_API_KEY");
+  if (!liveChecksAvailable()) throw new Error("deploy requires TFY_HOST and TFY_API_KEY");
   await validate(config, { allowUpdate: Boolean(flags.update) });
   const files = await compile(config, outDir);
   const filesByName = new Map(files.map((file) => [path.basename(file), file]));
@@ -675,8 +646,8 @@ async function main() {
     return;
   }
   const config = await readHermesConfig(file);
-  process.env.TFY_BASE_URL ||= controlPlaneUrl(config);
-  const outDir = flags.out || ".hermes-rendered";
+  process.env.TFY_HOST ||= controlPlaneUrl(config);
+  const outDir = flags.out || config.name;
 
   if (command === "validate") {
     const warnings = await validate(config, { allowUpdate: Boolean(flags.update), skipLiveChecks: Boolean(flags["skip-live-checks"]) });
@@ -687,12 +658,6 @@ async function main() {
   if (command === "compile") {
     const files = await compile(config, outDir);
     console.log(`wrote ${files.length} files to ${outDir}`);
-    return;
-  }
-  if (command === "slack-manifest") {
-    const manifest = slackManifest(config);
-    if ((flags.format || "json") === "yaml") process.stdout.write(YAML.stringify(manifest, { lineWidth: 0 }));
-    else process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
     return;
   }
   if (command === "deploy") {

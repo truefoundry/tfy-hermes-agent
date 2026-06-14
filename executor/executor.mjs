@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 const runId = process.env.HARNESS_RUN_ID || process.env.RUN_ID;
-const controlApi = (process.env.HARNESS_CONTROL_API_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+const controllerUrl = (process.env.HARNESS_CONTROLLER_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const internalToken = process.env.HARNESS_INTERNAL_TOKEN || "";
 const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 600_000);
 
-if (!runId || !controlApi) {
-  console.error("HARNESS_RUN_ID and HARNESS_CONTROL_API_URL are required");
+if (!runId || !controllerUrl) {
+  console.error("HARNESS_RUN_ID and HARNESS_CONTROLLER_URL are required");
   process.exit(2);
 }
 
 if (!internalToken) {
-  console.error("HARNESS_INTERNAL_TOKEN is required so the runner can authenticate to the control API");
+  console.error("HARNESS_INTERNAL_TOKEN is required so the executor can authenticate to the controller");
   process.exit(2);
 }
 
@@ -26,14 +26,14 @@ function authHeaders(extra = {}) {
 }
 
 async function getJson(apiPath) {
-  const res = await fetch(`${controlApi}${apiPath}`, { headers: authHeaders() });
+  const res = await fetch(`${controllerUrl}${apiPath}`, { headers: authHeaders() });
   const text = await res.text();
   if (!res.ok) throw new Error(`${apiPath} failed ${res.status}: ${text}`);
   return text ? JSON.parse(text) : {};
 }
 
 async function postJson(apiPath, body) {
-  const res = await fetch(`${controlApi}${apiPath}`, {
+  const res = await fetch(`${controllerUrl}${apiPath}`, {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body)
@@ -163,10 +163,10 @@ function runCommand(command, args, options = {}) {
 async function installAgentSkills(env, skills) {
   const fqns = (skills || []).map((entry) => String(entry || "").trim()).filter(Boolean);
   if (!fqns.length) return [];
-  const serviceApi = (env.TFY_SERVICE_API_URL || env.TFY_PLATFORM_BASE_URL || "").replace(/\/+$/, "");
-  const token = env.TFY_PLATFORM_API_KEY || "";
+  const serviceApi = (env.TFY_HOST || "").replace(/\/+$/, "");
+  const token = env.TFY_API_KEY || "";
   if (!serviceApi || !token) {
-    throw new Error("TFY_SERVICE_API_URL and TFY_PLATFORM_API_KEY are required to install Hermes skills");
+    throw new Error("TFY_HOST and TFY_API_KEY are required to install Hermes skills");
   }
 
   const res = await fetch(`${serviceApi}/api/ml/v1/x/agent-skill-versions/presigned-urls`, {
@@ -247,7 +247,7 @@ async function writeHermesObserverPlugin(home) {
   await writeFile(path.join(pluginDir, "plugin.yaml"), [
     "name: tfy_slack_observer",
     "version: 0.1.0",
-    "description: Emits sanitized Hermes observer events back to the TrueFoundry Hermes control API.",
+    "description: Emits sanitized Hermes observer events back to the TrueFoundry Hermes controller.",
     "hooks:",
     "  - pre_api_request",
     "  - post_api_request",
@@ -268,7 +268,7 @@ import urllib.request
 
 _SENSITIVE = re.compile(r"(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)", re.I)
 _RUN_ID = os.environ.get("HARNESS_RUN_ID") or os.environ.get("RUN_ID")
-_CONTROL_API = (os.environ.get("HARNESS_CONTROL_API_URL") or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+_CONTROLLER_URL = (os.environ.get("HARNESS_CONTROLLER_URL") or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
 _TOKEN = os.environ.get("HARNESS_INTERNAL_TOKEN") or ""
 
 
@@ -305,7 +305,7 @@ def _compact(value, depth=0):
 
 
 def _emit(kind, **payload):
-    if not (_RUN_ID and _CONTROL_API and _TOKEN):
+    if not (_RUN_ID and _CONTROLLER_URL and _TOKEN):
         return
     body = {
         "type": "hermes_observer",
@@ -316,7 +316,7 @@ def _emit(kind, **payload):
         }, separators=(",", ":"), default=str),
     }
     req = urllib.request.Request(
-        f"{_CONTROL_API}/api/internal/runs/{_RUN_ID}/events",
+        f"{_CONTROLLER_URL}/api/internal/runs/{_RUN_ID}/events",
         data=json.dumps(body).encode("utf-8"),
         headers={
             "authorization": f"Bearer {_TOKEN}",
@@ -422,11 +422,8 @@ def register(ctx):
 
 async function runHermes(prompt, work) {
   const env = { ...process.env };
-  const model = work.agent?.model || process.env.HERMES_INFERENCE_MODEL;
-  if (process.env.TFY_GATEWAY_API_KEY && !env.OPENAI_API_KEY) env.OPENAI_API_KEY = process.env.TFY_GATEWAY_API_KEY;
-  if (process.env.TFY_GATEWAY_API_KEY && !env.TFY_API_KEY) env.TFY_API_KEY = process.env.TFY_GATEWAY_API_KEY;
-  if (process.env.TFY_GATEWAY_BASE_URL && !env.OPENAI_BASE_URL) env.OPENAI_BASE_URL = process.env.TFY_GATEWAY_BASE_URL;
-  if (model) env.HERMES_INFERENCE_MODEL = model;
+  const model = work.agent?.model || process.env.HERMES_MODEL;
+  if (model) env.HERMES_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
   const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
@@ -498,7 +495,7 @@ if __name__ == "__main__":
   const args = [wrapperPath, promptPath, model || "", env.OPENAI_BASE_URL ? "custom" : "", toolsets.join(",")];
 
   return new Promise((resolve, reject) => {
-    emitRunEvent("runner_diagnostic", JSON.stringify({
+    emitRunEvent("executor_diagnostic", JSON.stringify({
       phase: "start",
       model: model || null,
       promptChars: prompt.length,
@@ -541,7 +538,7 @@ if __name__ == "__main__":
     child.on("exit", (code) => {
       clearTimeout(timer);
       if (killed) return reject(new Error(`hermes turn exceeded HARNESS_TURN_TIMEOUT_MS=${turnTimeoutMs}ms`));
-      const exitDiagnostic = emitRunEvent("runner_diagnostic", JSON.stringify({
+      const exitDiagnostic = emitRunEvent("executor_diagnostic", JSON.stringify({
         phase: "exit",
         code,
         stdoutChars: stdout.length,

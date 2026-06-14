@@ -3,6 +3,9 @@
 - Keep this repo focused on the reusable TrueFoundry Hermes deployment package.
 - Do not vendor the upstream Hermes Agent source tree here.
 - Secrets must remain TrueFoundry SecretGroup references in manifests.
-- Prefer small, explicit YAML templates that can be copied into another project.
-- Validate changed JavaScript with `npm run check` and render manifests before committing.
+- Keep `README.md` short and orientation-focused; put deployment runbooks in repo-local skills and references.
+- Treat `hermes.yaml` plus the compiler as the source of truth for generated Slack and TrueFoundry manifests.
+- Keep runtime naming consistent: use `controller`, `executor`, and `snapshotter` for folders, entrypoint files, Dockerfiles, and generated manifest component names.
+- Keep generated env vars minimal; prefer `hermes.yaml` fields over new env knobs, and do not add alias env names for the same setting.
+- Validate changed JavaScript with `npm run check` and compile `examples/agent.hermes.yaml` before committing.
 - TrueFoundry services do not support WebSockets; Slack support must use the HTTP Events API plus outbound Slack Web API calls, not Socket Mode or any WebSocket-dependent flow.

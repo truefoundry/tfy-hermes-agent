@@ -2,6 +2,17 @@
 
 Use this when creating or reviewing a standalone Hermes Slack agent deployment.
 
+## Contents
+
+- Agent inputs
+- `hermes.yaml`
+- SecretGroup scaffold
+- Slack app
+- Deployment
+- Live validation
+- Health checks
+- Failure handling
+
 ## Agent Inputs
 
 Collect these first:
@@ -9,6 +20,7 @@ Collect these first:
 - `name`: lowercase Slack-safe handle, for example `devrel-assistant`
 - `description`: one short sentence
 - `instructions`: operating behavior/personality
+- `gateway_url`: OpenAI-compatible gateway URL used by Hermes model calls
 - `mcp_servers`: MCP Gateway URLs only
 - `skills`: skill FQNs only, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`
 - `host`: optional public agent API URL; infer from agent name, workspace, and tenant env when omitted
@@ -33,6 +45,8 @@ instructions: |
   Draft before sending messages unless explicitly confirmed.
 
 model: openai-main/gpt-5.5
+
+gateway_url: https://your-openai-compatible-gateway/v1
 
 secrets: devrel-assistant-hermes-secrets
 
@@ -62,9 +76,7 @@ name: devrel-assistant-hermes-secrets
 type: secret-group
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 secrets:
-  TFY_GATEWAY_URL: "https://your-openai-compatible-gateway/v1"
   TFY_API_KEY: "replace-in-truefoundry-only"
-  TFY_HOST: "https://tfy-eo.truefoundry.cloud"
   HARNESS-INTERNAL-TOKEN: "compiler-generated-random-token"
   SLACK-BOT-TOKEN: "xoxb-replace-in-truefoundry-only"
   SLACK-SIGNING-SECRET: "replace-in-truefoundry-only"
@@ -75,7 +87,7 @@ Do not ask the user to generate or paste it into chat.
 
 ## Slack App
 
-1. Generate `slack-app-manifest.json`.
+1. Run `npx @truefoundry/tfy-hermes-agent compile hermes.yaml`.
 2. User creates the Slack app from the manifest.
 3. User installs the app into the workspace.
 4. User copies the signing secret and bot token into the SecretGroup.
@@ -83,7 +95,8 @@ Do not ask the user to generate or paste it into chat.
    - `https://<host>/slack/events`
    - `https://<host>/slack/interactions`
 
-Do not use Socket Mode. Do not create Slack user groups.
+Do not use Socket Mode. Do not create Slack user groups. The Slack app manifest
+is generated at `<agent-name>/slack-app-manifest.json`.
 
 If `slack` is omitted, Slack access is open anywhere the app is installed and
 invited. If `slack.channels` is set, only those channel/group/DM IDs can trigger
@@ -110,3 +123,48 @@ on every successful snapshot. Expected artifact FQN shape:
 ```text
 artifact:<tenant>/<snapshot.ml_repo>/<snapshot.artifact_name>:<version>
 ```
+
+## Live Validation
+
+Run live validation after the Slack app exists and the SecretGroup is filled:
+
+```bash
+npx @truefoundry/tfy-hermes-agent validate hermes.yaml
+```
+
+Live validation should confirm:
+
+- no controller, executor, or snapshotter name collision, unless `--update` is intended
+- no host collision
+- SecretGroup exists and contains required keys
+- MCP server URLs are visible through TrueFoundry MCP Gateway
+- skill FQNs are visible through TrueFoundry
+- `snapshot.ml_repo` exists and is accessible, when `snapshot` is configured
+
+## Health Checks
+
+After deploy:
+
+```bash
+curl -fsS https://<host>/api/health
+curl -fsS https://<host>/slack/health
+curl -fsS https://<host>/v1/models
+```
+
+Expected `/slack/health` includes:
+
+- `botTokenConfigured: true`
+- `signingSecretConfigured: true`
+
+## Failure Handling
+
+- Slack URL verification fails: confirm `/api/health`, `/slack/health`, and same-app signing secret.
+- Slack auth fails: reinstall the app and refresh `SLACK-BOT-TOKEN` in the SecretGroup.
+- No channel response: invite the Slack app to the channel and confirm scopes.
+- Agent responds without a mention in a channel: fix routing before declaring success.
+- Run starts but does not complete: inspect `<name>-executor` job logs and gateway credentials.
+- Thinking completes but no final output: inspect Slack stream completion and final markdown formatting.
+- Two runs for one message: inspect event dedupe and bot/self-message ignores.
+- MCP tools are missing: verify `mcp_servers`, executor diagnostic toolsets, and MCP discovery before oneshot.
+- Instructions are ignored: verify manifest instructions are appended as an ephemeral system prompt.
+- Snapshot artifact is missing: verify `snapshot.ml_repo`, `HERMES_SNAPSHOT_ML_REPO`, `TFY_HOST`, and `TFY_API_KEY`.

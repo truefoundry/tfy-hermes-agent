@@ -5,48 +5,34 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 const PORT = Number(process.env.PORT || 8787);
 const STATE_ROOT = process.env.HARNESS_STATE_DIR || "/data/state";
-const TFY_BASE_URL = (process.env.TFY_BASE_URL || process.env.TFY_HOST || "").replace(/\/+$/, "");
-const TFY_PLATFORM_API_KEY = process.env.TFY_PLATFORM_API_KEY || process.env.TFY_API_KEY || "";
-const TFY_GATEWAY_API_KEY = process.env.TFY_GATEWAY_API_KEY || "";
+const TFY_HOST = (process.env.TFY_HOST || "").replace(/\/+$/, "");
+const TFY_API_KEY = process.env.TFY_API_KEY || "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
-const HERMES_MODEL = process.env.HERMES_INFERENCE_MODEL || process.env.HARNESS_MODEL || "openai-main/gpt-5.5";
-const HERMES_JOB_APPLICATION_NAME = process.env.HERMES_JOB_APPLICATION_NAME || "hermes-turn-runner";
-const SKILLS_REGISTRY_URL = process.env.HERMES_SKILLS_REGISTRY_URL || "";
+const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
+const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
 const OPENAI_SYNC_TIMEOUT_MS = Number(process.env.HERMES_OPENAI_SYNC_TIMEOUT_MS || 120000);
 const OPENAI_POLL_INTERVAL_MS = Number(process.env.HERMES_OPENAI_POLL_INTERVAL_MS || 1000);
-const OPENAI_API_KEY = process.env.HERMES_OPENAI_API_KEY || "";
+const OPENAI_API_KEY = process.env.HERMES_OPENAI_API_KEY || TFY_API_KEY;
 const HARNESS_INTERNAL_TOKEN = process.env.HARNESS_INTERNAL_TOKEN || "";
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.HARNESS_API_URL || "").replace(/\/+$/, "");
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
-const SLACK_CLIENT_ID = process.env.SLACK_CLIENT_ID || "";
-const SLACK_CLIENT_SECRET = process.env.SLACK_CLIENT_SECRET || "";
-const SLACK_REDIRECT_URI = process.env.SLACK_REDIRECT_URI || "";
-const SLACK_OAUTH_STATE_SECRET = process.env.SLACK_OAUTH_STATE_SECRET || "";
-const SLACK_OAUTH_ENABLED = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_OAUTH_ENABLED || "").toLowerCase())
-  && Boolean(SLACK_CLIENT_ID && SLACK_CLIENT_SECRET && SLACK_OAUTH_STATE_SECRET);
 const SLACK_RUN_TIMEOUT_MS = Number(process.env.HERMES_SLACK_RUN_TIMEOUT_MS || OPENAI_SYNC_TIMEOUT_MS);
 const SLACK_STREAM_CHUNK_DELAY_MS = Number(process.env.HERMES_SLACK_STREAM_CHUNK_DELAY_MS || 120);
 const SLACK_STATUS_TEXT = process.env.HERMES_SLACK_STATUS_TEXT || "is thinking...";
-const SLACK_DRY_RUN = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_DRY_RUN || "").toLowerCase());
-const SLACK_CREATE_USERGROUPS = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_CREATE_USERGROUPS || "false").toLowerCase());
-const SLACK_REQUIRE_CHANNEL_DEPLOYMENT = ["1", "true", "yes"].includes(String(process.env.HERMES_SLACK_REQUIRE_CHANNEL_DEPLOYMENT || "false").toLowerCase());
-const LOCAL_RUN_RESULT = process.env.HERMES_LOCAL_RUN_RESULT || "";
 const MAX_RUNS = Number(process.env.HERMES_MAX_RUNS || 2000);
 const MAX_SESSIONS = Number(process.env.HERMES_MAX_SESSIONS || 2000);
-const MAX_SLACK_CALLS = Number(process.env.HERMES_MAX_SLACK_CALLS || 500);
 const SSE_KEEPALIVE_MS = Number(process.env.HERMES_SSE_KEEPALIVE_MS || 15000);
 const RAW_SECRET_PATTERN = /\b(?:xoxb-[a-z0-9-]{10,}|xoxp-[a-z0-9-]{10,}|xapp-[a-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[0-9A-Za-z_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
 
 const stateFile = path.join(STATE_ROOT, "state.json");
 const defaultAgentId = "agt_hermes";
-const defaultAgentHandle = handleFromString(process.env.HERMES_AGENT_HANDLE || process.env.HERMES_SLACK_HANDLE || "hermes");
+const defaultAgentHandle = handleFromString(process.env.HERMES_AGENT_HANDLE || "hermes");
 const defaultAgentName = process.env.HERMES_AGENT_NAME || "Hermes Agent";
 const defaultAgentDescription = process.env.HERMES_AGENT_DESCRIPTION || "";
 const defaultAgentInstructions = process.env.HERMES_AGENT_INSTRUCTIONS || "";
 const defaultAgentSkills = listFromEnv(process.env.HERMES_AGENT_SKILLS);
 const defaultAgentMcpServers = listFromEnv(process.env.HERMES_AGENT_MCP_SERVERS);
-const defaultAgentSecretRefs = listFromEnv(process.env.HERMES_AGENT_SECRET_REFS);
 const defaultAgentSlackAllowedChannelIds = normalizeSlackChannelIds(listFromEnv(process.env.HERMES_SLACK_ALLOWED_CHANNELS));
 const defaultAgentSlackAllowedUserIds = normalizeSlackUserIds(listFromEnv(process.env.HERMES_SLACK_ALLOWED_USERS));
 
@@ -84,7 +70,6 @@ function defaultAgentRecord(existing = {}) {
     workspaceFqn: TFY_WORKSPACE_FQN,
     skills: defaultAgentSkills.length ? defaultAgentSkills : Array.isArray(existing.skills) ? existing.skills : [],
     mcpServers: defaultAgentMcpServers.length ? defaultAgentMcpServers : Array.isArray(existing.mcpServers) ? existing.mcpServers : [],
-    secretRefs: defaultAgentSecretRefs.length ? defaultAgentSecretRefs : Array.isArray(existing.secretRefs) ? existing.secretRefs : [],
     slackAllowedChannelIds: defaultAgentSlackAllowedChannelIds,
     slackAllowedUserIds: defaultAgentSlackAllowedUserIds,
     createdAt: existing.createdAt || now(),
@@ -102,13 +87,7 @@ function normalizeState(state) {
   state.slack.events ||= {};
   state.slack.messages ||= {};
   state.slack.feedback ||= {};
-  state.slack.userAgents ||= {};
-  state.slack.usergroups ||= {};
-  state.slack.installations ||= {};
   state.slack.calls ||= [];
-  for (const agent of Object.values(state.agents)) {
-    if (agent.slackUsergroupId) state.slack.usergroups[agent.slackUsergroupId] = agent.id;
-  }
   return state;
 }
 
@@ -127,11 +106,7 @@ async function loadState() {
         threads: {},
         events: {},
         messages: {},
-        feedback: {},
-        userAgents: {},
-        usergroups: {},
-        installations: {},
-        calls: []
+        feedback: {}
       }
     });
   }
@@ -147,9 +122,6 @@ function pruneState(state) {
   if (sessionEntries.length > MAX_SESSIONS) {
     sessionEntries.sort((a, b) => new Date(b[1].updatedAt || b[1].createdAt || 0) - new Date(a[1].updatedAt || a[1].createdAt || 0));
     state.sessions = Object.fromEntries(sessionEntries.slice(0, MAX_SESSIONS));
-  }
-  if (Array.isArray(state.slack?.calls) && state.slack.calls.length > MAX_SLACK_CALLS) {
-    state.slack.calls = state.slack.calls.slice(-MAX_SLACK_CALLS);
   }
   return state;
 }
@@ -247,21 +219,6 @@ function agentByHandle(state, handle) {
   return Object.values(state.agents).find((agent) => agent.handle === normalized) || null;
 }
 
-function agentBySlackUsergroup(state, usergroupId, fallbackHandle = null) {
-  const agentId = state.slack.usergroups?.[usergroupId];
-  if (agentId && state.agents[agentId]) return state.agents[agentId];
-  const byId = Object.values(state.agents).find((agent) => agent.slackUsergroupId === usergroupId);
-  if (byId) return byId;
-  if (fallbackHandle) {
-    try {
-      return agentByHandle(state, fallbackHandle);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 function agentLabel(agent) {
   return `@${agent?.handle || defaultAgentHandle}`;
 }
@@ -276,65 +233,13 @@ function parseMessageHandle(text) {
   };
 }
 
-function slackUsergroupMentions(text) {
-  return Array.from(String(text || "").matchAll(/<!subteam\^([A-Z0-9]+)(?:\|@?([^>]+))?>/g))
-    .map((match) => ({
-      id: match[1],
-      handle: safeHandle(match[2])
-    }));
-}
-
-function safeHandle(value) {
-  if (!value) return null;
-  try {
-    return handleFromString(value);
-  } catch {
-    return null;
-  }
-}
-
-function parseMessageRoute(state, text) {
-  const mentions = slackUsergroupMentions(text);
-  for (const mention of mentions) {
-    const agent = agentBySlackUsergroup(state, mention.id, mention.handle);
-    if (agent) {
-      return {
-        agent,
-        handle: agent.handle,
-        text: cleanSlackText(text),
-        source: "slack_usergroup"
-      };
-    }
-  }
-
+function parseMessageRoute(text) {
   const parsed = parseMessageHandle(text);
   return {
     agent: null,
     handle: parsed.handle,
     text: parsed.text,
-    source: parsed.handle ? "typed_handle" : null,
-    unknownUsergroupMentioned: mentions.length > 0
-  };
-}
-
-function createAgentRecord({ handle, name, description, instructions, model, createdBy }) {
-  const normalized = handleFromString(handle);
-  return {
-    id: id("agt"),
-    name: name || `${normalized} agent`,
-    handle: normalized,
-    description: description || "",
-    instructions: instructions || "",
-    model: model || HERMES_MODEL,
-    workspaceFqn: TFY_WORKSPACE_FQN,
-    skills: [],
-    mcpServers: [],
-    secretRefs: [],
-    slackAllowedChannelIds: [],
-    slackAllowedUserIds: [],
-    createdBy: createdBy || null,
-    createdAt: now(),
-    updatedAt: now()
+    source: parsed.handle ? "typed_handle" : null
   };
 }
 
@@ -350,23 +255,7 @@ function normalizeSlackUserIds(values) {
     .filter(Boolean)));
 }
 
-function deployAgentToSlackChannels(agent, channelIds) {
-  const existing = normalizeSlackChannelIds(agent.slackChannelIds || []);
-  const next = normalizeSlackChannelIds([...existing, ...normalizeSlackChannelIds(channelIds)]);
-  return {
-    ...agent,
-    slackChannelIds: next,
-    updatedAt: now()
-  };
-}
-
-function agentCanRespondInSlackChannel(agent, channel, { isDirectMessage = false } = {}) {
-  if (isDirectMessage || !SLACK_REQUIRE_CHANNEL_DEPLOYMENT) return true;
-  const channelIds = normalizeSlackChannelIds(agent?.slackChannelIds || []);
-  return channelIds.includes(String(channel || "").toUpperCase());
-}
-
-function slackChannelAccess(agent, channel, { isDirectMessage = false } = {}) {
+function slackChannelAccess(agent, channel) {
   const allowedChannelIds = normalizeSlackChannelIds(agent?.slackAllowedChannelIds || []);
   if (allowedChannelIds.length) {
     return {
@@ -374,8 +263,7 @@ function slackChannelAccess(agent, channel, { isDirectMessage = false } = {}) {
       reason: "access_policy"
     };
   }
-  if (agentCanRespondInSlackChannel(agent, channel, { isDirectMessage })) return { allowed: true, reason: null };
-  return { allowed: false, reason: "channel_deployment" };
+  return { allowed: true, reason: null };
 }
 
 function agentCanRespondToSlackUser(agent, userId) {
@@ -384,55 +272,12 @@ function agentCanRespondToSlackUser(agent, userId) {
   return allowedUserIds.includes(String(userId || "").toUpperCase());
 }
 
-function formatAgentList(state) {
-  const agents = Object.values(state.agents)
-    .sort((a, b) => String(a.handle || "").localeCompare(String(b.handle || "")));
-  if (!agents.length) return "No Hermes agents exist yet.";
-  return agents.map((agent) => {
-    const channels = normalizeSlackChannelIds(agent.slackChannelIds || []);
-    const channelText = channels.length ? ` - channels: ${channels.join(", ")}` : " - not deployed";
-    return `${agentLabel(agent)} - ${agent.name || agent.id}${SLACK_REQUIRE_CHANNEL_DEPLOYMENT ? channelText : ""}`;
-  }).join("\n");
-}
-
-async function slackToken({ teamId = null } = {}) {
-  if (teamId) {
-    const state = await loadState();
-    const token = state.slack.installations?.[teamId]?.botToken;
-    if (token) return token;
-  }
+async function slackToken() {
   return SLACK_BOT_TOKEN;
 }
 
 async function slackApi(method, body, options = {}) {
-  if (SLACK_DRY_RUN) {
-    const ts = `${Math.floor(Date.now() / 1000)}.${String(Date.now() % 1000).padStart(6, "0")}`;
-    const usergroupId = `S${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
-    const streamedText = (body.chunks || [])
-      .filter((chunk) => chunk?.type === "markdown_text" && chunk.text)
-      .map((chunk) => chunk.text)
-      .join("") || body.markdown_text || "";
-    const payload = {
-      ok: true,
-      channel: body.channel || body.channel_id,
-      ts,
-      usergroup: method.startsWith("usergroups.") ? {
-        id: body.usergroup || usergroupId,
-        team_id: body.team_id || "TDRYRUN",
-        is_usergroup: true,
-        name: body.name || body.handle || "Hermes Agent",
-        handle: body.handle || "hermes",
-        description: body.description || "",
-        user_count: 0
-      } : undefined,
-      message: method === "chat.stopStream" ? { type: "message", text: streamedText, ts } : undefined
-    };
-    await withState((state) => {
-      state.slack.calls.push({ method, body, response: payload, createdAt: now() });
-    });
-    return payload;
-  }
-  const token = await slackToken(options);
+  const token = await slackToken();
   if (!token) throw new Error("Slack bot token is required for Slack integration");
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
@@ -448,84 +293,6 @@ async function slackApi(method, body, options = {}) {
     throw new Error(`Slack ${method} failed: ${payload.error || res.status}`);
   }
   return payload;
-}
-
-function slackOAuthStateToken(nonce) {
-  if (!SLACK_OAUTH_STATE_SECRET) throw new Error("SLACK_OAUTH_STATE_SECRET is required for Slack OAuth");
-  const issuedAt = Math.floor(Date.now() / 1000);
-  const payload = `${nonce}.${issuedAt}`;
-  const signature = createHmac("sha256", SLACK_OAUTH_STATE_SECRET).update(payload).digest("hex");
-  return `${payload}.${signature}`;
-}
-
-function verifySlackOAuthState(value, maxAgeSeconds = 600) {
-  if (!SLACK_OAUTH_STATE_SECRET || !value) return false;
-  const parts = String(value).split(".");
-  if (parts.length !== 3) return false;
-  const [nonce, issuedAtRaw, signature] = parts;
-  if (!nonce || !signature) return false;
-  const issuedAt = Number(issuedAtRaw);
-  if (!Number.isFinite(issuedAt)) return false;
-  if (Math.abs(Math.floor(Date.now() / 1000) - issuedAt) > maxAgeSeconds) return false;
-  const expected = createHmac("sha256", SLACK_OAUTH_STATE_SECRET).update(`${nonce}.${issuedAtRaw}`).digest("hex");
-  const expectedBuf = Buffer.from(expected);
-  const signatureBuf = Buffer.from(signature);
-  return expectedBuf.length === signatureBuf.length && timingSafeEqual(expectedBuf, signatureBuf);
-}
-
-async function exchangeSlackOAuthCode(code) {
-  if (!SLACK_CLIENT_ID || !SLACK_CLIENT_SECRET) {
-    throw new Error("SLACK_CLIENT_ID and SLACK_CLIENT_SECRET are required for Slack OAuth");
-  }
-  const form = new URLSearchParams({
-    client_id: SLACK_CLIENT_ID,
-    client_secret: SLACK_CLIENT_SECRET,
-    code
-  });
-  if (SLACK_REDIRECT_URI) form.set("redirect_uri", SLACK_REDIRECT_URI);
-  const res = await fetch("https://slack.com/api/oauth.v2.access", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: form.toString()
-  });
-  const text = await res.text();
-  const payload = text ? JSON.parse(text) : {};
-  if (!res.ok || !payload.ok) {
-    throw new Error(`Slack OAuth failed: ${payload.error || res.status}`);
-  }
-  return payload;
-}
-
-function storeSlackInstallation(state, payload) {
-  const teamId = payload.team?.id || payload.authed_user?.team_id;
-  if (!teamId || !payload.access_token) {
-    throw new Error("Slack OAuth response did not include a team id and bot token");
-  }
-  state.slack.installations[teamId] = {
-    teamId,
-    teamName: payload.team?.name || null,
-    enterpriseId: payload.enterprise?.id || null,
-    enterpriseName: payload.enterprise?.name || null,
-    botToken: payload.access_token,
-    botUserId: payload.bot_user_id || null,
-    appId: payload.app_id || null,
-    scope: payload.scope || null,
-    tokenType: payload.token_type || "bot",
-    installedAt: now(),
-    updatedAt: now()
-  };
-  return state.slack.installations[teamId];
-}
-
-async function syncSlackDryRunCalls(state) {
-  if (!SLACK_DRY_RUN) return state;
-  try {
-    const latest = JSON.parse(await readFile(stateFile, "utf8"));
-    state.slack.calls = latest.slack?.calls || state.slack.calls || [];
-  } catch {
-    state.slack.calls ||= [];
-  }
-  return state;
 }
 
 function slackThreadKey({ teamId, channel, threadTs }) {
@@ -799,102 +566,6 @@ async function postSlackMessage({ channel, threadTs, text, blocks = null, teamId
   return slackApi("chat.postMessage", body, { teamId });
 }
 
-async function createSlackUsergroupForAgent(agent, { teamId = null } = {}) {
-  if (!SLACK_CREATE_USERGROUPS) return null;
-  if (!SLACK_DRY_RUN && !(await slackToken({ teamId }))) {
-    throw new Error("Slack bot token is required to create Slack agent handles");
-  }
-  const body = {
-    name: agent.name || `${agent.handle} agent`,
-    handle: agent.handle,
-    description: `Hermes agent handle for ${agent.name || agent.handle}`
-  };
-  if (teamId) body.team_id = teamId;
-  const response = await slackApi("usergroups.create", body, { teamId });
-  if (!response.usergroup?.id) {
-    throw new Error("Slack did not return a user group for the new agent handle");
-  }
-  return response.usergroup;
-}
-
-async function setSlackUsergroupUsers({ usergroupId, userIds, teamId = null }) {
-  const users = Array.from(new Set((userIds || []).filter(Boolean)));
-  if (!usergroupId || !users.length) return null;
-  const body = {
-    usergroup: usergroupId,
-    users: users.join(",")
-  };
-  if (teamId) body.team_id = teamId;
-  return slackApi("usergroups.users.update", body, { teamId });
-}
-
-async function provisionSlackAgentHandle(state, agent, { teamId = null, memberUserIds = [] } = {}) {
-  const usergroup = await createSlackUsergroupForAgent(agent, { teamId });
-  await syncSlackDryRunCalls(state);
-  const desiredMemberIds = normalizeSlackUserIds([...(agent.slackUserIds || []), ...memberUserIds]);
-  let savedAgent = attachSlackUsergroup(state, { ...agent, slackUserIds: desiredMemberIds }, usergroup, { teamId });
-  try {
-    await setSlackUsergroupUsers({
-      usergroupId: usergroup.id,
-      userIds: desiredMemberIds,
-      teamId: usergroup.team_id || teamId
-    });
-    await syncSlackDryRunCalls(state);
-    savedAgent = {
-      ...savedAgent,
-      slackUserIds: desiredMemberIds,
-      slackUsergroupMemberSyncError: null,
-      updatedAt: now()
-    };
-    state.agents[savedAgent.id] = savedAgent;
-  } catch (error) {
-    savedAgent.slackUsergroupMemberSyncError = error instanceof Error ? error.message : String(error);
-    state.agents[savedAgent.id] = savedAgent;
-  }
-  return savedAgent;
-}
-
-async function reconcileSlackAgentMembers(state, agent, { teamId = null } = {}) {
-  const desiredMemberIds = normalizeSlackUserIds(agent.slackUserIds || []);
-  if (!agent.slackUsergroupId || !desiredMemberIds.length) return agent;
-  let updated = { ...agent };
-  try {
-    await setSlackUsergroupUsers({
-      usergroupId: agent.slackUsergroupId,
-      userIds: desiredMemberIds,
-      teamId: teamId || agent.slackTeamId || null
-    });
-    await syncSlackDryRunCalls(state);
-    updated = {
-      ...updated,
-      slackUsergroupMemberSyncError: null,
-      updatedAt: now()
-    };
-  } catch (error) {
-    updated = {
-      ...updated,
-      slackUsergroupMemberSyncError: error instanceof Error ? error.message : String(error),
-      updatedAt: now()
-    };
-  }
-  state.agents[updated.id] = updated;
-  return updated;
-}
-
-function attachSlackUsergroup(state, agent, usergroup, { teamId = null } = {}) {
-  if (!usergroup) return agent;
-  const updated = {
-    ...agent,
-    slackUsergroupId: usergroup.id,
-    slackTeamId: usergroup.team_id || teamId || agent.slackTeamId || null,
-    slackHandle: usergroup.handle || agent.handle,
-    updatedAt: now()
-  };
-  state.agents[agent.id] = updated;
-  state.slack.usergroups[usergroup.id] = agent.id;
-  return updated;
-}
-
 function slackPrompt({ text, context, agent }) {
   const contextLines = [];
   if (agent?.handle) contextLines.push(`Selected Hermes agent: ${agentLabel(agent)} (${agent.name || agent.id})`);
@@ -910,9 +581,8 @@ async function handleAssistantThreadStarted(payload) {
   const teamId = payload.team_id || thread.context?.team_id || null;
   const state = await loadState();
   const agent = state.agents[defaultAgentId];
-  const isDirectMessage = thread.channel_id.startsWith("D");
   if (!agentCanRespondToSlackUser(agent, thread.user_id)) return;
-  if (!slackChannelAccess(agent, thread.channel_id, { isDirectMessage }).allowed) return;
+  if (!slackChannelAccess(agent, thread.channel_id).allowed) return;
   await withState((state) => {
     ensureSlackThreadSession(state, {
       teamId,
@@ -947,9 +617,8 @@ async function handleAssistantThreadContextChanged(payload) {
   if (!thread?.channel_id || !thread?.thread_ts) return;
   const state = await loadState();
   const agent = state.agents[defaultAgentId];
-  const isDirectMessage = thread.channel_id.startsWith("D");
   if (!agentCanRespondToSlackUser(agent, thread.user_id)) return;
-  if (!slackChannelAccess(agent, thread.channel_id, { isDirectMessage }).allowed) return;
+  if (!slackChannelAccess(agent, thread.channel_id).allowed) return;
   await withState((state) => {
     ensureSlackThreadSession(state, {
       teamId: payload.team_id || thread.context?.team_id,
@@ -966,11 +635,9 @@ async function handleSlackUserMessage(payload) {
   if (event.bot_id || event.subtype || !event.channel || !event.user) return;
   const teamId = payload.team_id || event.team;
   const state = await loadState();
-  const installation = teamId ? state.slack.installations?.[teamId] : null;
-  if (installation?.botUserId && event.user === installation.botUserId) return;
   const channel = event.channel;
   const threadTs = event.thread_ts || event.ts;
-  const route = parseMessageRoute(state, event.text);
+  const route = parseMessageRoute(event.text);
   const text = route.text;
   const existingThread = state.slack.threads[slackThreadKey({ teamId, channel, threadTs })];
   const channelType = event.channel_type || "";
@@ -978,7 +645,7 @@ async function handleSlackUserMessage(payload) {
   const isBotMention = event.type === "app_mention";
   const shouldRespond = Boolean(route.handle || isBotMention || isDirectMessage);
 
-  if (!shouldRespond || route.unknownUsergroupMentioned) return;
+  if (!shouldRespond) return;
   if (!text) {
     await postSlackMessage({
       channel,
@@ -996,7 +663,6 @@ async function handleSlackUserMessage(payload) {
   });
   if (!claimedMessage) return;
 
-  const userDefaultAgentId = state.slack.userAgents[event.user] || null;
   let agent = null;
   if (route.agent) {
     agent = route.agent;
@@ -1013,25 +679,13 @@ async function handleSlackUserMessage(payload) {
     }
   } else if (existingThread?.agentId && state.agents[existingThread.agentId]) {
     agent = state.agents[existingThread.agentId];
-  } else if (userDefaultAgentId && state.agents[userDefaultAgentId]) {
-    agent = state.agents[userDefaultAgentId];
   } else {
     agent = state.agents[defaultAgentId];
   }
 
   if (!agentCanRespondToSlackUser(agent, event.user)) return;
 
-  const channelAccess = slackChannelAccess(agent, channel, { isDirectMessage });
-  if (!channelAccess.allowed) {
-    if (channelAccess.reason === "access_policy") return;
-    await postSlackMessage({
-      channel,
-      threadTs,
-      teamId,
-      text: `${agentLabel(agent)} is not deployed to this channel. Run \`/hermes-agent deploy ${agent.handle}\` from this channel first.`
-    });
-    return;
-  }
+  if (!slackChannelAccess(agent, channel).allowed) return;
 
   const thread = await withState((mutableState) => {
     const { thread: t } = ensureSlackThreadSession(mutableState, {
@@ -1086,7 +740,7 @@ async function handleSlackUserMessage(payload) {
           details: slackTaskDetails([
             "Request received",
             "Slack stream opened",
-            "Runner job queued"
+            "Executor job queued"
           ])
         }
       ]
@@ -1225,178 +879,6 @@ async function handleSlackInteraction(body) {
   });
 }
 
-async function postSlackResponseUrl(responseUrl, message) {
-  if (!responseUrl) return;
-  try {
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(message)
-    });
-  } catch (error) {
-    console.error(`response_url POST failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-async function runSlackCommand(form) {
-  const text = String(form.get("text") || "").trim();
-  const userId = form.get("user_id") || "slack";
-  const teamId = form.get("team_id") || null;
-  const channelId = form.get("channel_id") || null;
-  const [rawAction = "help", rawHandle = "", ...rest] = text.split(/\s+/);
-  const action = rawAction.toLowerCase();
-
-  if (action === "list") {
-    const state = await loadState();
-    return {
-      response_type: "ephemeral",
-      text: `Known Hermes agents:\n${formatAgentList(state)}`
-    };
-  }
-
-  if (action === "create") {
-    if (!SLACK_CREATE_USERGROUPS) {
-      return {
-        response_type: "ephemeral",
-        text: `This deployment is one Slack app per Hermes agent. Create another agent by deploying a new hermes.yaml and Slack app instead.`
-      };
-    }
-    let handle;
-    try {
-      handle = handleFromString(rawHandle);
-    } catch (error) {
-      return { response_type: "ephemeral", text: error instanceof Error ? error.message : String(error) };
-    }
-    const conflict = await loadState().then((s) => agentByHandle(s, handle));
-    if (conflict) {
-      return {
-        response_type: "ephemeral",
-        text: `${agentLabel({ handle })} already exists. Use \`/hermes-agent use ${handle}\` or choose another handle.`
-      };
-    }
-    const baseAgent = createAgentRecord({
-      handle,
-      name: rest.join(" ").trim() || `${handle} agent`,
-      createdBy: userId
-    });
-    let savedAgent = channelId ? deployAgentToSlackChannels(baseAgent, [channelId]) : baseAgent;
-    let provisionError = null;
-    if (SLACK_CREATE_USERGROUPS) {
-      try {
-        const provisionState = await loadState();
-        provisionState.agents[savedAgent.id] = savedAgent;
-        savedAgent = await provisionSlackAgentHandle(provisionState, savedAgent, { teamId, memberUserIds: [userId] });
-        await withState((state) => {
-          state.agents[savedAgent.id] = savedAgent;
-          state.slack.userAgents[userId] = savedAgent.id;
-        });
-      } catch (error) {
-        provisionError = error instanceof Error ? error.message : String(error);
-      }
-    } else {
-      await withState((state) => {
-        state.agents[savedAgent.id] = savedAgent;
-        state.slack.userAgents[userId] = savedAgent.id;
-      });
-    }
-    if (provisionError) {
-      return {
-        response_type: "ephemeral",
-        text: `I couldn't create the Slack handle ${agentLabel(savedAgent)}: ${provisionError}`
-      };
-    }
-    const memberWarning = savedAgent.slackUsergroupMemberSyncError
-      ? `\nSlack handle was created, but member sync needs attention: ${savedAgent.slackUsergroupMemberSyncError}`
-      : "";
-    return {
-      response_type: "ephemeral",
-      text: `Created ${agentLabel(savedAgent)} and set it as your default agent. Mention ${agentLabel(savedAgent)} in Slack to talk to it.${memberWarning}`
-    };
-  }
-
-  if (action === "use") {
-    const result = await withState((state) => {
-      let agent = null;
-      try {
-        agent = agentByHandle(state, rawHandle);
-      } catch {
-        agent = null;
-      }
-      if (!agent) {
-        return {
-          response_type: "ephemeral",
-          text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
-        };
-      }
-      state.slack.userAgents[userId] = agent.id;
-      return {
-        response_type: "ephemeral",
-        text: `Your default Hermes agent is now ${agentLabel(agent)}. Existing threads keep their current agent unless you prefix a new message with another handle.`
-      };
-    });
-    return result;
-  }
-
-  if (action === "deploy") {
-    return withState((state) => {
-      let agent = null;
-      if (!rawHandle) {
-        agent = state.agents[defaultAgentId];
-      } else {
-        try {
-          agent = agentByHandle(state, rawHandle);
-        } catch {
-          agent = null;
-        }
-      }
-      if (!agent) {
-        return {
-          response_type: "ephemeral",
-          text: `I don't know ${rawHandle || "that handle"}.\n\nKnown agents:\n${formatAgentList(state)}`
-        };
-      }
-      const channels = normalizeSlackChannelIds(rest.length ? rest : [channelId]);
-      if (!channels.length) {
-        return {
-          response_type: "ephemeral",
-          text: `Tell me which channel to deploy ${agentLabel(agent)} to, or run this command from the target channel.`
-        };
-      }
-      const updated = deployAgentToSlackChannels(agent, channels);
-      state.agents[agent.id] = updated;
-      return {
-        response_type: "ephemeral",
-        text: `${agentLabel(updated)} is deployed to ${updated.slackChannelIds.join(", ")}.`
-      };
-    });
-  }
-
-  const state = await loadState();
-  return {
-    response_type: "ephemeral",
-    text: [
-      `This Slack app is configured for ${agentLabel(state.agents[defaultAgentId])}.`,
-      `Mention ${agentLabel(state.agents[defaultAgentId])} in a channel where the app is installed, or message the app directly.`,
-      "`/hermes-agent list`",
-      "`/hermes-agent deploy` records the current channel only if channel deployment gating is enabled."
-    ].join("\n")
-  };
-}
-
-async function handleSlackCommand(body) {
-  const form = new URLSearchParams(body);
-  const responseUrl = form.get("response_url") || "";
-  runSlackCommand(form)
-    .then((message) => postSlackResponseUrl(responseUrl, message))
-    .catch((error) => {
-      console.error(`slack command handler failed: ${error instanceof Error ? error.message : String(error)}`);
-      return postSlackResponseUrl(responseUrl, {
-        response_type: "ephemeral",
-        text: `I hit an error running that command: ${error instanceof Error ? error.message : String(error)}`
-      });
-    });
-}
-
 function createdUnix(run) {
   const value = new Date(run?.createdAt || now()).getTime();
   return Number.isNaN(value) ? Math.floor(Date.now() / 1000) : Math.floor(value / 1000);
@@ -1413,20 +895,12 @@ function runIdFromOpenAIId(value) {
   return id;
 }
 
-function requireTfySecretRefs(refs) {
-  for (const ref of refs || []) {
-    if (typeof ref !== "string" || !ref.startsWith("tfy-secret://")) {
-      throw new Error(`secret reference must use tfy-secret://: ${ref}`);
-    }
-  }
-}
-
 async function tfyGet(apiPath) {
-  if (!TFY_BASE_URL || !TFY_PLATFORM_API_KEY) {
-    throw new Error("TFY_BASE_URL and TFY_PLATFORM_API_KEY are required for TrueFoundry control-plane calls");
+  if (!TFY_HOST || !TFY_API_KEY) {
+    throw new Error("TFY_HOST and TFY_API_KEY are required for TrueFoundry control-plane calls");
   }
-  const res = await fetch(`${TFY_BASE_URL}${apiPath}`, {
-    headers: { authorization: `Bearer ${TFY_PLATFORM_API_KEY}` }
+  const res = await fetch(`${TFY_HOST}${apiPath}`, {
+    headers: { authorization: `Bearer ${TFY_API_KEY}` }
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`TrueFoundry ${apiPath} failed ${res.status}: ${text.slice(0, 500)}`);
@@ -1441,7 +915,7 @@ function bearerToken(req) {
 
 function requireInternalAuth(req, res) {
   if (!HARNESS_INTERNAL_TOKEN) {
-    send(res, 503, { error: "HARNESS_INTERNAL_TOKEN is not configured on the control API" });
+    send(res, 503, { error: "HARNESS_INTERNAL_TOKEN is not configured on the controller" });
     return false;
   }
   const provided = bearerToken(req);
@@ -1478,83 +952,31 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-async function listGatewayServers() {
-  const body = await tfyGet("/api/svc/v1/mcp-servers");
-  const rows = Array.isArray(body.data) ? body.data : [];
-  return rows.map((row) => {
-    const manifest = row.manifest || {};
-    const auth = typeof row.authStatus === "string"
-      ? row.authStatus
-      : row.authStatus?.status || row.auth_status?.status || "unknown";
-    const tools = Array.isArray(row.tools)
-      ? row.tools
-      : Array.isArray(manifest.tool_settings)
-        ? manifest.tool_settings.filter((tool) => !tool.disabled).map((tool) => ({ name: tool.name, serverName: row.name }))
-        : [];
-    return {
-      id: row.id,
-      name: row.name || manifest.name,
-      type: manifest.type || row.type,
-      authStatus: auth,
-      tools
-    };
-  }).filter((server) => server.name);
-}
-
-async function listSkillsRegistry() {
-  if (!SKILLS_REGISTRY_URL) return [];
-  const res = await fetch(SKILLS_REGISTRY_URL, {
-    headers: TFY_PLATFORM_API_KEY ? { authorization: `Bearer ${TFY_PLATFORM_API_KEY}` } : {}
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`skills registry failed ${res.status}: ${text.slice(0, 500)}`);
-  const body = text ? JSON.parse(text) : {};
-  return Array.isArray(body.skills) ? body.skills : Array.isArray(body.data) ? body.data : [];
-}
-
-async function validateAgentPatch(patch) {
-  if (patch.secretRefs) requireTfySecretRefs(patch.secretRefs);
-
-  if (patch.skills) {
-    const registry = await listSkillsRegistry();
-    const allowed = new Set(registry.map((skill) => String(skill.slug || skill.name || skill.id)));
-    const unknown = patch.skills.filter((skill) => !allowed.has(String(skill)));
-    if (unknown.length) throw new Error(`skills not found in registry: ${unknown.join(", ")}`);
-  }
-
-  if (patch.mcpServers) {
-    const visibleServers = await listGatewayServers();
-    const visibleNames = new Set(visibleServers.map((server) => server.name));
-    const unknown = patch.mcpServers.filter((server) => !visibleNames.has(String(server)));
-    if (unknown.length) throw new Error(`MCP servers not visible through TrueFoundry MCP Gateway: ${unknown.join(", ")}`);
-  }
-}
-
 async function triggerJob(runId) {
-  if (!TFY_BASE_URL || !TFY_PLATFORM_API_KEY || !TFY_WORKSPACE_FQN) return null;
+  if (!TFY_HOST || !TFY_API_KEY || !TFY_WORKSPACE_FQN) return null;
   if (!PUBLIC_BASE_URL) {
-    throw new Error("PUBLIC_BASE_URL (or HARNESS_API_URL) must be set so the turn-runner can call back");
+    throw new Error("PUBLIC_BASE_URL must be set so the executor can call back");
   }
   if (!HARNESS_INTERNAL_TOKEN) {
-    throw new Error("HARNESS_INTERNAL_TOKEN must be set so the turn-runner can authenticate to the control API");
+    throw new Error("HARNESS_INTERNAL_TOKEN must be set so the executor can authenticate to the controller");
   }
   const apps = await tfyGet(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(TFY_WORKSPACE_FQN)}&limit=200`);
-  const job = (Array.isArray(apps.data) ? apps.data : []).find((app) => app.name === HERMES_JOB_APPLICATION_NAME);
+  const job = (Array.isArray(apps.data) ? apps.data : []).find((app) => app.name === HERMES_EXECUTOR_NAME);
   const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
-  if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_JOB_APPLICATION_NAME}`);
+  if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_EXECUTOR_NAME}`);
   const payload = {
     deploymentId,
     input: {
-      command: `sh -lc ${shellQuote(`HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROL_API_URL=${shellQuote(PUBLIC_BASE_URL)} node runner/turn-runner.mjs`)}`
+      command: `sh -lc ${shellQuote(`HARNESS_RUN_ID=${shellQuote(runId)} HARNESS_CONTROLLER_URL=${shellQuote(PUBLIC_BASE_URL)} node executor/executor.mjs`)}`
     },
     metadata: {
       job_run_name_alias: runId
     }
   };
-  const res = await fetch(`${TFY_BASE_URL}/api/svc/v1/jobs/trigger`, {
+  const res = await fetch(`${TFY_HOST}/api/svc/v1/jobs/trigger`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${TFY_PLATFORM_API_KEY}`,
+      authorization: `Bearer ${TFY_API_KEY}`,
       "content-type": "application/json"
     },
     body: JSON.stringify(payload)
@@ -1610,23 +1032,6 @@ async function createRun({ agentId = defaultAgentId, userId = "openai-sdk", sess
     };
     return { run: { ...state.runs[runId] }, session: { ...session } };
   });
-
-  if (LOCAL_RUN_RESULT) {
-    return withState((state) => {
-      const run = state.runs[runId];
-      if (!run) return queued;
-      run.status = "completed";
-      run.result = LOCAL_RUN_RESULT;
-      run.trigger = { mode: "local" };
-      run.updatedAt = now();
-      const session = state.sessions[run.sessionId];
-      if (session) {
-        session.messages.push({ role: "assistant", content: LOCAL_RUN_RESULT, createdAt: now() });
-        session.updatedAt = now();
-      }
-      return { run: { ...run }, session: session ? { ...session } : queued.session };
-    });
-  }
 
   let trigger = null;
   let triggerError = null;
@@ -2164,47 +1569,9 @@ async function handle(req, res) {
         slack: {
           botTokenConfigured: Boolean(SLACK_BOT_TOKEN),
           signingSecretConfigured: Boolean(SLACK_SIGNING_SECRET),
-          oauthConfigured: SLACK_OAUTH_ENABLED,
-          installations: Object.keys(state.slack.installations || {}).length,
-          dryRun: SLACK_DRY_RUN,
-          createUsergroups: SLACK_CREATE_USERGROUPS,
-          requireChannelDeployment: SLACK_REQUIRE_CHANNEL_DEPLOYMENT,
           allowedChannels: defaultAgentSlackAllowedChannelIds,
           allowedUsers: defaultAgentSlackAllowedUserIds
         }
-      });
-    }
-
-    if (req.method === "GET" && url.pathname === "/slack/oauth/install") {
-      if (!SLACK_OAUTH_ENABLED) return send(res, 404, { error: "Slack OAuth is not enabled" });
-      const nonce = randomUUID();
-      const stateToken = slackOAuthStateToken(nonce);
-      const params = new URLSearchParams({
-        client_id: SLACK_CLIENT_ID,
-        scope: "app_mentions:read,assistant:write,channels:history,channels:join,channels:read,chat:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,team:read,users:read",
-        state: stateToken
-      });
-      if (SLACK_REDIRECT_URI) params.set("redirect_uri", SLACK_REDIRECT_URI);
-      const target = `https://slack.com/oauth/v2/authorize?${params.toString()}`;
-      res.writeHead(302, { location: target });
-      return res.end();
-    }
-
-    if (req.method === "GET" && url.pathname === "/slack/oauth/callback") {
-      if (!SLACK_OAUTH_ENABLED) return send(res, 404, { error: "Slack OAuth is not enabled" });
-      const code = url.searchParams.get("code");
-      const error = url.searchParams.get("error");
-      const stateParam = url.searchParams.get("state");
-      if (error) return send(res, 400, { error });
-      if (!code) return send(res, 400, { error: "missing Slack OAuth code" });
-      if (!verifySlackOAuthState(stateParam)) return send(res, 400, { error: "invalid or expired OAuth state" });
-      const payload = await exchangeSlackOAuthCode(code);
-      const installation = await withState((state) => storeSlackInstallation(state, payload));
-      return send(res, 200, {
-        ok: true,
-        teamId: installation.teamId,
-        teamName: installation.teamName,
-        botUserId: installation.botUserId
       });
     }
 
@@ -2218,8 +1585,8 @@ async function handle(req, res) {
         return send(res, 400, { error: "invalid JSON body" });
       }
       if (payload.type === "url_verification") return send(res, 200, { challenge: payload.challenge });
-      if (!SLACK_DRY_RUN && !(await slackToken({ teamId: payload.team_id || payload.team?.id || null }))) {
-        return send(res, 503, { error: "Slack bot token is not configured for this team" });
+      if (!(await slackToken())) {
+        return send(res, 503, { error: "Slack bot token is not configured" });
       }
       processSlackEvent(payload).catch((error) => {
         console.error(error instanceof Error ? error.stack || error.message : String(error));
@@ -2234,15 +1601,6 @@ async function handle(req, res) {
         console.error(error instanceof Error ? error.stack || error.message : String(error));
       });
       return send(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && url.pathname === "/slack/commands") {
-      const body = await rawBody(req);
-      if (!verifySlackRequest(req, body)) return send(res, 401, { error: "invalid Slack signature" });
-      handleSlackCommand(body).catch((error) => {
-        console.error(error instanceof Error ? error.stack || error.message : String(error));
-      });
-      return send(res, 200, { response_type: "ephemeral", text: "Working on it..." });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/models") {
@@ -2266,7 +1624,7 @@ async function handle(req, res) {
         previousSessionId = snapshot.runs[runIdFromOpenAIId(body.previous_response_id)]?.sessionId || null;
       }
       const { run } = await createRun({
-        agentId: body.agent || defaultAgentId,
+        agentId: defaultAgentId,
         userId: body.user || "openai-sdk",
         sessionId: previousSessionId,
         content,
@@ -2313,7 +1671,7 @@ async function handle(req, res) {
         return sendOpenAIError(res, 400, error instanceof Error ? error.message : String(error));
       }
       const { run } = await createRun({
-        agentId: body.agent || defaultAgentId,
+        agentId: defaultAgentId,
         userId: body.user || "openai-sdk",
         content,
         openai: {
@@ -2350,155 +1708,6 @@ async function handle(req, res) {
       return run ? send(res, 200, chatCompletionObject(run)) : sendOpenAIError(res, 404, "chat completion not found", "invalid_request_error");
     }
 
-    if (req.method === "GET" && url.pathname === "/api/agents") {
-      const state = await loadState();
-      return send(res, 200, { agents: Object.values(state.agents) });
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/agents") {
-      const body = await json(req);
-      try { rejectRawSecretsInPayload(body); } catch (error) {
-        return send(res, error.statusCode || 400, { error: error.message });
-      }
-      let handle;
-      try {
-        handle = handleFromString(body.handle || body.name);
-      } catch (error) {
-        return send(res, 400, { error: error instanceof Error ? error.message : String(error) });
-      }
-      const snapshot = await loadState();
-      if (agentByHandle(snapshot, handle)) return send(res, 409, { error: `agent handle already exists: ${handle}` });
-      await validateAgentPatch(body);
-      const baseAgent = {
-        ...createAgentRecord({
-          handle,
-          name: body.name || `${handle} agent`,
-          description: body.description || "",
-          instructions: body.instructions || "",
-          model: body.model || HERMES_MODEL,
-          createdBy: body.createdBy || null
-        }),
-        skills: Array.isArray(body.skills) ? body.skills : [],
-        mcpServers: Array.isArray(body.mcpServers) ? body.mcpServers : [],
-        secretRefs: Array.isArray(body.secretRefs) ? body.secretRefs : [],
-        slackChannelIds: normalizeSlackChannelIds(body.slackChannelIds || body.channelIds || []),
-        slackUserIds: normalizeSlackUserIds(body.slackUserIds || body.userIds || []),
-        slackAllowedChannelIds: normalizeSlackChannelIds(body.slackAllowedChannelIds || body.allowedChannelIds || []),
-        slackAllowedUserIds: normalizeSlackUserIds(body.slackAllowedUserIds || body.allowedUserIds || [])
-      };
-      let savedAgent = await withState((state) => {
-        state.agents[baseAgent.id] = baseAgent;
-        return baseAgent;
-      });
-      if (body.createSlackHandle !== false && SLACK_CREATE_USERGROUPS) {
-        try {
-          const provisionState = await loadState();
-          provisionState.agents[savedAgent.id] = savedAgent;
-          savedAgent = await provisionSlackAgentHandle(provisionState, savedAgent, {
-            teamId: body.slackTeamId || body.teamId || null,
-            memberUserIds: savedAgent.slackUserIds
-          });
-          await withState((state) => { state.agents[savedAgent.id] = savedAgent; });
-        } catch (error) {
-          return send(res, 502, { error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-      return send(res, 201, { agent: savedAgent });
-    }
-
-    const agentHandleMatch = url.pathname.match(/^\/api\/agents\/by-handle\/([^/]+)$/);
-    if (agentHandleMatch && req.method === "GET") {
-      const state = await loadState();
-      let agent = null;
-      try {
-        agent = agentByHandle(state, agentHandleMatch[1]);
-      } catch {
-        agent = null;
-      }
-      return agent ? send(res, 200, { agent }) : send(res, 404, { error: "agent not found" });
-    }
-
-    const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
-    if (agentMatch && req.method === "GET") {
-      const state = await loadState();
-      const agent = state.agents[agentMatch[1]];
-      return agent ? send(res, 200, { agent }) : send(res, 404, { error: "agent not found" });
-    }
-
-    if (agentMatch && req.method === "PATCH") {
-      const patch = await json(req);
-      try { rejectRawSecretsInPayload(patch); } catch (error) {
-        return send(res, error.statusCode || 400, { error: error.message });
-      }
-      const createSlackHandle = patch.createSlackHandle;
-      const slackTeamId = patch.slackTeamId || patch.teamId || null;
-      if (patch.channelIds && !patch.slackChannelIds) patch.slackChannelIds = patch.channelIds;
-      if (patch.userIds && !patch.slackUserIds) patch.slackUserIds = patch.userIds;
-      if (patch.allowedChannelIds && !patch.slackAllowedChannelIds) patch.slackAllowedChannelIds = patch.allowedChannelIds;
-      if (patch.allowedUserIds && !patch.slackAllowedUserIds) patch.slackAllowedUserIds = patch.allowedUserIds;
-      if (patch.slackChannelIds) patch.slackChannelIds = normalizeSlackChannelIds(patch.slackChannelIds);
-      if (patch.slackUserIds) patch.slackUserIds = normalizeSlackUserIds(patch.slackUserIds);
-      if (patch.slackAllowedChannelIds) patch.slackAllowedChannelIds = normalizeSlackChannelIds(patch.slackAllowedChannelIds);
-      if (patch.slackAllowedUserIds) patch.slackAllowedUserIds = normalizeSlackUserIds(patch.slackAllowedUserIds);
-      delete patch.createSlackHandle;
-      delete patch.teamId;
-      delete patch.channelIds;
-      delete patch.userIds;
-      delete patch.allowedChannelIds;
-      delete patch.allowedUserIds;
-      await validateAgentPatch(patch);
-      if (patch.handle) patch.handle = handleFromString(patch.handle);
-
-      let updatedAgent;
-      try {
-        updatedAgent = await withState((state) => {
-          const agent = state.agents[agentMatch[1]];
-          if (!agent) throw Object.assign(new Error("agent not found"), { statusCode: 404 });
-          if (patch.handle) {
-            const existing = agentByHandle(state, patch.handle);
-            if (existing && existing.id !== agent.id) {
-              throw Object.assign(new Error(`agent handle already exists: ${patch.handle}`), { statusCode: 409 });
-            }
-          }
-          const merged = { ...agent, ...patch, id: agent.id, updatedAt: now() };
-          state.agents[agent.id] = merged;
-          return merged;
-        });
-      } catch (error) {
-        return send(res, error.statusCode || 400, { error: error.message });
-      }
-
-      const effectiveTeamId = slackTeamId || updatedAgent.slackTeamId || null;
-      if (createSlackHandle === true && SLACK_CREATE_USERGROUPS && !updatedAgent.slackUsergroupId) {
-        try {
-          const provisionState = await loadState();
-          provisionState.agents[updatedAgent.id] = updatedAgent;
-          updatedAgent = await provisionSlackAgentHandle(provisionState, updatedAgent, {
-            teamId: effectiveTeamId,
-            memberUserIds: patch.slackUserIds || []
-          });
-          await withState((state) => { state.agents[updatedAgent.id] = updatedAgent; });
-        } catch (error) {
-          return send(res, 502, { error: error instanceof Error ? error.message : String(error) });
-        }
-      } else if (patch.slackUserIds) {
-        const reconcileState = await loadState();
-        reconcileState.agents[updatedAgent.id] = updatedAgent;
-        updatedAgent = await reconcileSlackAgentMembers(reconcileState, updatedAgent, { teamId: effectiveTeamId });
-        await withState((state) => { state.agents[updatedAgent.id] = updatedAgent; });
-      }
-      return send(res, 200, { agent: updatedAgent });
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/mcp/tools") {
-      const servers = await listGatewayServers();
-      return send(res, 200, { servers, tools: servers.flatMap((server) => server.tools || []) });
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/skills/registry") {
-      return send(res, 200, { skills: await listSkillsRegistry() });
-    }
-
     if (req.method === "POST" && url.pathname === "/api/sessions") {
       const body = await json(req);
       try { rejectRawSecretsInPayload(body); } catch (error) {
@@ -2508,7 +1717,7 @@ async function handle(req, res) {
         const sessionId = id("ses");
         state.sessions[sessionId] = {
           id: sessionId,
-          agentId: body.agentId || defaultAgentId,
+          agentId: defaultAgentId,
           userId: body.userId || "default",
           messages: [],
           createdAt: now(),
@@ -2539,7 +1748,7 @@ async function handle(req, res) {
       const state = await loadState();
       const run = state.runs[workMatch[1]];
       if (!run) return send(res, 404, { error: "run not found" });
-      const agent = state.agents[run.agentId];
+      const agent = state.agents[run.agentId] || state.agents[defaultAgentId];
       const session = state.sessions[run.sessionId];
       return send(res, 200, { run, agent, session, content: run.content, memory: sessionMemory(session, run.inputMessageId) });
     }
@@ -2620,10 +1829,10 @@ async function handle(req, res) {
 
 function assertStartupConfig() {
   if (!HARNESS_INTERNAL_TOKEN) {
-    console.warn("[hermes] HARNESS_INTERNAL_TOKEN is not set; turn-runner callbacks will be rejected and job dispatch will fail");
+    console.warn("[hermes] HARNESS_INTERNAL_TOKEN is not set; executor callbacks will be rejected and job dispatch will fail");
   }
   if (!PUBLIC_BASE_URL) {
-    console.warn("[hermes] PUBLIC_BASE_URL is not set; turn-runner cannot reach this control API");
+    console.warn("[hermes] PUBLIC_BASE_URL is not set; executor cannot reach this controller");
   }
   if (!OPENAI_API_KEY) {
     console.warn("[hermes] HERMES_OPENAI_API_KEY is not set; /v1/* endpoints are unauthenticated. Front this service with a gateway or set the env.");
@@ -2639,7 +1848,7 @@ const httpServer = createServer((req, res) => {
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   assertStartupConfig();
-  console.log(`hermes control API listening on :${PORT}`);
+  console.log(`hermes controller listening on :${PORT}`);
 });
 
 function shutdown(signal) {

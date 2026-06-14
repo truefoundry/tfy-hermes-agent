@@ -12,13 +12,13 @@ GET https://<host>/slack/health
 GET https://<host>/v1/models
 ```
 
+Use the configured `/v1/*` bearer token. By default this is the SecretGroup
+`TFY_API_KEY`; deployments may override it with `HERMES_OPENAI_API_KEY`.
+
 Expected Slack health:
 
 - `botTokenConfigured: true`
 - `signingSecretConfigured: true`
-- `oauthConfigured: false`
-- `createUsergroups: false`
-- `requireChannelDeployment: false`
 
 ## Backend Session Test
 
@@ -71,6 +71,9 @@ While they test, monitor API/run logs and confirm:
 - executor job starts
 - Hermes activity appears
 - final answer posts in the Slack thread
+
+If `slack.channels` or `slack.users` is configured in `hermes.yaml`, also test
+one denied channel or user path before declaring the allowlist healthy.
 
 If the agent responds without a mention in a channel, fix routing before
 declaring success.
