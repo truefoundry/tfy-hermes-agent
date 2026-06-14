@@ -384,6 +384,10 @@ async function slackApi(method, body, options = {}) {
   if (SLACK_DRY_RUN) {
     const ts = `${Math.floor(Date.now() / 1000)}.${String(Date.now() % 1000).padStart(6, "0")}`;
     const usergroupId = `S${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+    const streamedText = (body.chunks || [])
+      .filter((chunk) => chunk?.type === "markdown_text" && chunk.text)
+      .map((chunk) => chunk.text)
+      .join("") || body.markdown_text || "";
     const payload = {
       ok: true,
       channel: body.channel || body.channel_id,
@@ -397,7 +401,7 @@ async function slackApi(method, body, options = {}) {
         description: body.description || "",
         user_count: 0
       } : undefined,
-      message: method === "chat.stopStream" ? { type: "message", text: body.markdown_text || "", ts } : undefined
+      message: method === "chat.stopStream" ? { type: "message", text: streamedText, ts } : undefined
     };
     await withState((state) => {
       state.slack.calls.push({ method, body, response: payload, createdAt: now() });
@@ -668,20 +672,30 @@ async function startSlackStream({ channel, threadTs, teamId, userId, agent }) {
   }, { teamId });
 }
 
+function slackMarkdownChunk(text) {
+  return {
+    type: "markdown_text",
+    text
+  };
+}
+
 async function appendSlackStream({ channel, ts, markdownText, chunks = null, teamId = null }) {
   const body = { channel, ts };
-  if (markdownText) body.markdown_text = markdownText;
-  if (chunks) body.chunks = chunks;
+  const allChunks = [];
+  if (markdownText) allChunks.push(slackMarkdownChunk(markdownText));
+  if (chunks) allChunks.push(...chunks);
+  if (allChunks.length) body.chunks = allChunks;
   return slackApi("chat.appendStream", body, { teamId });
 }
 
-async function stopSlackStream({ channel, ts, markdownText = "", blocks = [], teamId = null }) {
-  return slackApi("chat.stopStream", {
-    channel,
-    ts,
-    markdown_text: markdownText,
-    blocks
-  }, { teamId });
+async function stopSlackStream({ channel, ts, markdownText = "", chunks = null, blocks = [], teamId = null }) {
+  const body = { channel, ts };
+  const allChunks = [];
+  if (markdownText) allChunks.push(slackMarkdownChunk(markdownText));
+  if (chunks) allChunks.push(...chunks);
+  if (allChunks.length) body.chunks = allChunks;
+  if (blocks.length) body.blocks = blocks;
+  return slackApi("chat.stopStream", body, { teamId });
 }
 
 async function postSlackMessage({ channel, threadTs, text, blocks = null, teamId = null }) {
