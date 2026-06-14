@@ -81,11 +81,44 @@ function yamlString(value) {
   return JSON.stringify(String(value || ""));
 }
 
+function mcpServerNameFromUrl(value, index) {
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const raw = parts.length >= 2 && parts.at(-1) === "server" ? parts.at(-2) : parts.at(-1);
+    const name = String(raw || `remote-${index + 1}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return name || `remote-${index + 1}`;
+  } catch {
+    return `remote-${index + 1}`;
+  }
+}
+
+function mcpConfigLines(servers) {
+  const urls = (servers || []).filter((entry) => /^https?:\/\//i.test(String(entry)));
+  if (!urls.length) return [];
+  const seen = new Map();
+  const lines = ["mcp_servers:"];
+  urls.forEach((url, index) => {
+    const baseName = mcpServerNameFromUrl(url, index);
+    const count = seen.get(baseName) || 0;
+    seen.set(baseName, count + 1);
+    const name = count ? `${baseName}-${count + 1}` : baseName;
+    lines.push(`  ${name}:`);
+    lines.push(`    url: ${yamlString(url)}`);
+    lines.push("    headers:");
+    lines.push("      Authorization: \"Bearer ${TFY_GATEWAY_API_KEY}\"");
+  });
+  return lines;
+}
+
 function looksLikeHermesFailure(text) {
   return /^API call failed\b/i.test(String(text || "").trim());
 }
 
-async function writeHermesConfig(env, model) {
+async function writeHermesConfig(env, model, work) {
   const home = env.HERMES_HOME || path.join(env.HOME || process.cwd(), ".hermes");
   await mkdir(home, { recursive: true });
   await writeHermesObserverPlugin(home);
@@ -103,6 +136,7 @@ async function writeHermesConfig(env, model) {
     "plugins:",
     "  enabled:",
     "    - tfy_slack_observer",
+    ...mcpConfigLines(work.agent?.mcpServers),
     ""
   ].join("\n");
   await writeFile(path.join(home, "config.yaml"), config, { mode: 0o600 });
@@ -296,7 +330,7 @@ async function runHermes(prompt, work) {
   if (model) env.HERMES_INFERENCE_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
-  const hermesHome = await writeHermesConfig(env, model);
+  const hermesHome = await writeHermesConfig(env, model, work);
 
   const args = ["-z", prompt];
   if (model) args.push("--model", model);
