@@ -81,6 +81,22 @@ Maintain this state internally and progress in order. If a value is obvious from
 - Read `references/deployment-example.md` when creating or reviewing a concrete `hermes.yaml`, generated SecretGroup scaffold, or Slack app setup.
 - Read `references/session-smoke-test.md` before declaring a deployed agent healthy.
 
+## TrueFoundry Deploy Skill Routing
+
+When TrueFoundry deploy skills from `truefoundry/tfy-deploy-skills` are available, use them for platform operations instead of reimplementing deployment mechanics in this skill. Keep `hermes.yaml` and `npx @truefoundry/tfy-hermes-agent` as the source of truth for Hermes-specific compilation.
+
+Preferred routing:
+
+- Use `truefoundry-status` before live operations to confirm `TFY_BASE_URL` or `TFY_HOST`, `TFY_API_KEY`, and API connectivity.
+- Use `truefoundry-workspaces` when the target `workspace_fqn` is missing or uncertain.
+- Use `truefoundry-secrets` for SecretGroup creation, placeholder key creation, and key existence checks. Still never ask the user to paste secret values into chat.
+- Use `truefoundry-deploy` for applying compiled `state`, `controller`, `executor`, and `snapshotter` manifests when available.
+- Use `truefoundry-monitor` or `truefoundry-applications` to wait for controller rollout and inspect component health.
+- Use `truefoundry-logs` for controller/executor/snapshotter failures.
+- Use `truefoundry-service-test` for `/api/health`, `/slack/health`, `/v1/models`, and session smoke tests when it fits the available tooling.
+
+If those skills are not installed, continue with the explicit `npx @truefoundry/tfy-hermes-agent`, `tfy apply`, `curl`, and log-inspection commands in this skill. Do not block onboarding just because the deploy skills are unavailable.
+
 ## Deploy Dependency Order
 
 Some resources can be prepared in parallel, but runtime readiness has dependencies:
@@ -93,7 +109,7 @@ hermes.yaml
   -> SecretGroup manually created/filled
   -> live validation
   -> compile TFY manifests
-  -> apply secrets + state + controller
+  -> confirm secrets + apply state + controller
   -> wait for API health
   -> configure/verify Slack Event + Interactivity URLs
   -> apply/update executor + snapshotter
@@ -103,7 +119,7 @@ hermes.yaml
 Parallel-safe:
 
 - Generate Slack manifest while preparing the SecretGroup.
-- Create secrets and state before the controller service exists.
+- Create or confirm secrets and state before the controller service exists.
 - Compile manifests anytime after `hermes.yaml` is valid.
 
 Serial requirements:
@@ -191,6 +207,8 @@ After the user confirms the Slack app exists, generate rendered manifests if nee
 npx @truefoundry/tfy-hermes-agent compile hermes.yaml
 ```
 
+If `truefoundry-secrets` is available and local TrueFoundry credentials are configured, create the SecretGroup scaffold keys for the user with placeholders. Otherwise, ask the user to create or update it manually.
+
 Then stop and give exactly one manual task:
 
 "Create or update the TrueFoundry SecretGroup named `<secrets>` from the generated scaffold. It should contain exactly these keys: `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`, `HARNESS-INTERNAL-TOKEN`, `TFY_GATEWAY_URL`, `TFY_API_KEY`, and `TFY_HOST`. The compiler generates `HARNESS-INTERNAL-TOKEN` for new agents. Leave that generated value unless rotating the agent. Fill the other placeholders in TrueFoundry directly, not in chat. Tell me when the SecretGroup is ready."
@@ -214,6 +232,8 @@ After the user confirms the SecretGroup is ready, run live validation if local T
 npx @truefoundry/tfy-hermes-agent validate hermes.yaml
 ```
 
+If `truefoundry-status`, `truefoundry-workspaces`, `truefoundry-secrets`, or related deploy skills are available, use them to resolve live validation failures before asking the user.
+
 If credentials are missing, stop with one task:
 
 "Set `TFY_BASE_URL` and `TFY_API_KEY` in this terminal, or run the validation command locally and send me whether it passed."
@@ -235,6 +255,8 @@ Deploy only after live validation passes:
 ```bash
 npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
 ```
+
+If `truefoundry-deploy` and `truefoundry-monitor` are available, use them to apply and monitor the compiled manifests. Preserve the compiler's deploy ordering and keep the generated SecretGroup scaffold out of automatic deploy unless the user explicitly asked to create placeholders.
 
 Use `--update` only when the user has confirmed they want to replace the running deployment. `--update` redeploys the controller service and executor job in-place and can interrupt in-flight Slack requests:
 
@@ -279,6 +301,8 @@ Expected `/slack/health` includes:
 - `requireChannelDeployment: false`
 
 If health fails, inspect TrueFoundry application rollout and logs before returning to Slack.
+
+Prefer `truefoundry-applications`, `truefoundry-monitor`, `truefoundry-logs`, and `truefoundry-service-test` for these checks when available.
 
 Before claiming the deployment works, run or verify at least one backend session test against the agent API. The run diagnostics should show:
 
