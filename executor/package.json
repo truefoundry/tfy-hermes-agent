@@ -1,0 +1,9 @@
+{
+  "name": "@truefoundry/tfy-hermes-executor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tar": "^7.4.3"
+  }
+}

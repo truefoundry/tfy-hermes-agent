@@ -11,7 +11,9 @@ RUN apt-get update && \
     python -m pip install --no-cache-dir "hermes-agent[mcp]==0.16.0"
 
 WORKDIR /opt/tfy-hermes-agent
-COPY package.json ./
+COPY executor/package.json ./executor/package.json
+RUN cd executor && npm install --omit=dev --no-audit --no-fund
+
 COPY executor ./executor
 
 CMD ["node", "executor/executor.mjs"]

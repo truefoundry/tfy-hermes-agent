@@ -14,10 +14,6 @@ gateway_url: https://your-openai-compatible-gateway/v1
 
 secrets: devrel-assistant-hermes-secrets
 
-snapshot:
-  ml_repo: devrel-assistant
-  artifact_name: devrel-assistant-state-snapshots
-
 # Optional. Omit this block or leave either list empty for unrestricted access.
 # Defaults: open to all users and all channels when this block is absent.
 slack:

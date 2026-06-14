@@ -8,9 +8,13 @@ Hermes on TrueFoundry:
 - `controller/` - HTTP service for health, Slack Events, Slack interactions,
   OpenAI-compatible `/v1/*` routes, and executor callbacks.
 - `executor/` - one-turn TrueFoundry job that runs Hermes.
-- `snapshotter/` - job that snapshots the shared Hermes state volume.
 - `bin/tfy-hermes-agent.mjs` - validates, compiles, and deploys `hermes.yaml`.
 - `skills/deploy-hermes-slack-agent/` - full deployment runbook.
+
+State durability lives on the controller's RWO `/data` volume (one
+`wrapper.db` plus one SQLite file per Slack thread under `/data/sessions/`).
+Offsite backup is out of scope for the deployed stack; run a periodic
+`sqlite3 .backup` cron against the same volume if you need it.
 
 Install the skill into your coding agent with [`skills`](https://skills.sh):
 
@@ -36,7 +40,6 @@ devrel-assistant/
   devrel-assistant-controller.yaml
   devrel-assistant-executor.yaml
   devrel-assistant-secrets.scaffold.yaml
-  devrel-assistant-snapshotter.yaml
   devrel-assistant-state.yaml
   slack-app-manifest.json
 ```

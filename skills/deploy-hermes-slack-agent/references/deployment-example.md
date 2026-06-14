@@ -27,7 +27,6 @@ Collect these first:
 - `workspace_fqn`: TrueFoundry workspace FQN
 - `secrets`: SecretGroup name, default `<name>-hermes-secrets`
 - `slack`: optional access policy with `channels` and `users` allowlists
-- `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
 
 ## hermes.yaml
 
@@ -49,10 +48,6 @@ model: openai-main/gpt-5.5
 gateway_url: https://your-openai-compatible-gateway/v1
 
 secrets: devrel-assistant-hermes-secrets
-
-snapshot:
-  ml_repo: devrel-assistant
-  artifact_name: devrel-assistant-state-snapshots
 
 # Optional. Omit this block when Slack access is unrestricted.
 # Defaults: open to all users and all channels when this block is absent.
@@ -113,18 +108,14 @@ Apply generated manifests after validation:
 <name>-state.yaml
 <name>-controller.yaml
 <name>-executor.yaml
-<name>-snapshotter.yaml
 ```
 
 The SecretGroup scaffold is for user filling and should not overwrite existing
 secrets during normal deploy.
 
-If `snapshot` is configured, the snapshotter must log a real artifact version
-on every successful snapshot. Expected artifact FQN shape:
-
-```text
-artifact:<tenant>/<snapshot.ml_repo>/<snapshot.artifact_name>:<version>
-```
+State durability lives on the controller's RWO `/data` volume. There is no
+deployed snapshot job; if offsite backup is required, run an out-of-band
+`sqlite3 .backup` cron against the same volume.
 
 ## Live Validation
 
@@ -136,12 +127,11 @@ npx @truefoundry/tfy-hermes-agent validate hermes.yaml
 
 Live validation should confirm:
 
-- no controller, executor, or snapshotter name collision, unless `--update` is intended
+- no controller or executor name collision, unless `--update` is intended
 - no host collision
 - SecretGroup exists and contains required keys
 - MCP server URLs are visible through TrueFoundry MCP Gateway
 - skill FQNs are visible through TrueFoundry
-- `snapshot.ml_repo` exists and is accessible, when `snapshot` is configured
 
 ## Health Checks
 
@@ -169,4 +159,3 @@ Expected `/slack/health` includes:
 - Two runs for one message: inspect event dedupe and bot/self-message ignores.
 - MCP tools are missing: verify `mcp_servers`, executor diagnostic toolsets, and MCP discovery before oneshot.
 - Instructions are ignored: verify manifest instructions are appended as an ephemeral system prompt.
-- Snapshot artifact is missing: verify `snapshot.ml_repo`, `HERMES_SNAPSHOT_ML_REPO`, `TFY_HOST`, and `TFY_API_KEY`.

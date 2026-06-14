@@ -1,39 +1,54 @@
 import { spawn } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import tar from "tar";
 
-const runId = process.env.HARNESS_RUN_ID || process.env.RUN_ID;
-const controllerUrl = (process.env.HARNESS_CONTROLLER_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
-const internalToken = process.env.HARNESS_INTERNAL_TOKEN || "";
+const workB64 = process.env.HARNESS_WORK_B64 || "";
 const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 600_000);
 
-if (!runId || !controllerUrl) {
-  console.error("HARNESS_RUN_ID and HARNESS_CONTROLLER_URL are required");
+if (!workB64) {
+  console.error("HARNESS_WORK_B64 is required");
   process.exit(2);
 }
 
-if (!internalToken) {
-  console.error("HARNESS_INTERNAL_TOKEN is required so the executor can authenticate to the controller");
+let payload;
+try {
+  payload = JSON.parse(Buffer.from(workB64, "base64").toString("utf8"));
+} catch (error) {
+  console.error(`HARNESS_WORK_B64 could not be decoded: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(2);
 }
+
+const runId = payload?.run_id;
+const hermesSessionId = payload?.hermes_session_id;
+// Per DESIGN.md, HARNESS_CALLBACK_TOKEN is delivered as its own job env (paired
+// with HARNESS_WORK_B64). Accept callback_token inside the payload as a fallback
+// for older controller dispatches.
+const callbackToken = process.env.HARNESS_CALLBACK_TOKEN || payload?.callback_token || "";
+const callbackBase = (payload?.callback_url || process.env.HARNESS_CONTROLLER_URL || "").replace(/\/+$/, "");
+
+if (!runId || !hermesSessionId || !callbackToken || !callbackBase) {
+  console.error("HARNESS_WORK_B64 payload missing required fields (run_id, hermes_session_id, callback_token, callback_url)");
+  process.exit(2);
+}
+
+const eventsPath = `/api/internal/runs/${encodeURIComponent(runId)}/events`;
+const sessionDbPath = `/api/internal/runs/${encodeURIComponent(runId)}/session-db`;
+const completePath = `/api/internal/runs/${encodeURIComponent(runId)}/complete`;
 
 function authHeaders(extra = {}) {
   return {
-    authorization: `Bearer ${internalToken}`,
+    authorization: `Bearer ${callbackToken}`,
     ...extra
   };
 }
 
-async function getJson(apiPath) {
-  const res = await fetch(`${controllerUrl}${apiPath}`, { headers: authHeaders() });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${apiPath} failed ${res.status}: ${text}`);
-  return text ? JSON.parse(text) : {};
-}
-
 async function postJson(apiPath, body) {
-  const res = await fetch(`${controllerUrl}${apiPath}`, {
+  const res = await fetch(`${callbackBase}${apiPath}`, {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body)
@@ -43,23 +58,33 @@ async function postJson(apiPath, body) {
   return text ? JSON.parse(text) : {};
 }
 
-function buildPrompt(work) {
-  const memory = work.memory ? `Conversation so far:\n${work.memory}\n\n` : "";
-  return `${memory}User message:\n${work.content}`;
+async function getStream(apiPath) {
+  return fetch(`${callbackBase}${apiPath}`, { headers: authHeaders() });
 }
 
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const _workB64Redactor = workB64 && workB64.length >= 12
+  ? new RegExp(escapeRegex(workB64), "g")
+  : null;
+const _callbackTokenRedactor = callbackToken && callbackToken.length >= 12
+  ? new RegExp(escapeRegex(callbackToken), "g")
+  : null;
+
 function redact(text) {
-  return String(text || "")
+  let out = String(text || "")
     .replace(/\b(?:xoxb|xoxp|xapp)-[a-zA-Z0-9-]+/g, "slack-token-redacted")
     .replace(/\bsk-[A-Za-z0-9_-]{20,}/g, "sk-redacted")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer redacted");
+  if (_workB64Redactor) out = out.replace(_workB64Redactor, "harness-work-b64-redacted");
+  if (_callbackTokenRedactor) out = out.replace(_callbackTokenRedactor, "harness-callback-token-redacted");
+  return out;
 }
 
 function emitRunEvent(type, text) {
-  return postJson(`/api/internal/runs/${encodeURIComponent(runId)}/events`, {
-    type,
-    text
-  }).catch((error) => {
+  return postJson(eventsPath, { type, text }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
   });
 }
@@ -145,19 +170,51 @@ function skillNameFromFqn(fqn, fallback) {
     .replace(/^-+|-+$/g, "") || "skill";
 }
 
-function runCommand(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { ...options, stdio: options.stdio || ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${command} ${args.join(" ")} exited with ${code}: ${redact(stderr || stdout)}`));
-    });
+function isUnsafeTarPath(entry) {
+  const value = String(entry || "");
+  if (!value) return true;
+  if (path.isAbsolute(value)) return true;
+  return value.split(/[\\/]+/).some((segment) => segment === "..");
+}
+
+async function downloadSessionDb(hermesHome) {
+  const dbPath = path.join(hermesHome, "state.db");
+  const res = await getStream(sessionDbPath);
+  if (res.status === 404) {
+    return { downloaded: false, bytes: 0, path: dbPath };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`session-db download failed ${res.status}: ${text.slice(0, 500)}`);
+  }
+  if (!res.body) throw new Error("session-db response had no body");
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(dbPath, { mode: 0o600 }));
+  const info = await stat(dbPath);
+  return { downloaded: true, bytes: info.size, path: dbPath };
+}
+
+async function uploadSessionDb(hermesHome) {
+  const dbPath = path.join(hermesHome, "state.db");
+  if (!existsSync(dbPath)) {
+    console.error(`session-db upload skipped: ${dbPath} does not exist`);
+    return { uploaded: false, bytes: 0 };
+  }
+  const info = await stat(dbPath);
+  const stream = createReadStream(dbPath);
+  const res = await fetch(`${callbackBase}${sessionDbPath}`, {
+    method: "POST",
+    headers: authHeaders({
+      "content-type": "application/octet-stream",
+      "content-length": String(info.size)
+    }),
+    body: Readable.toWeb(stream),
+    duplex: "half"
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`session-db upload failed ${res.status}: ${text.slice(0, 500)}`);
+  }
+  return { uploaded: true, bytes: info.size };
 }
 
 async function installAgentSkills(env, skills) {
@@ -195,15 +252,27 @@ async function installAgentSkills(env, skills) {
     const tarRes = await fetch(item.presigned_url);
     if (!tarRes.ok) throw new Error(`skill tar download failed for ${item.fqn}: ${tarRes.status}`);
     await writeFile(tarPath, Buffer.from(await tarRes.arrayBuffer()), { mode: 0o600 });
-    const listing = await runCommand("tar", ["-tf", tarPath]);
-    for (const entry of listing.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
-      if (path.isAbsolute(entry) || entry.split(/[\\/]+/).includes("..")) {
+
+    const entries = [];
+    await tar.list({
+      file: tarPath,
+      strict: true,
+      onentry: (entry) => { entries.push(entry.path); }
+    });
+    for (const entry of entries) {
+      if (isUnsafeTarPath(entry)) {
         throw new Error(`skill tar for ${item.fqn} contains unsafe path: ${entry}`);
       }
     }
+
     await rm(dest, { recursive: true, force: true });
     await mkdir(dest, { recursive: true });
-    await runCommand("tar", ["-xf", tarPath, "-C", dest]);
+    await tar.extract({
+      file: tarPath,
+      cwd: dest,
+      strict: true,
+      filter: (entryPath) => !isUnsafeTarPath(entryPath)
+    });
     await rm(tarPath, { force: true });
     installed.push({ fqn: item.fqn, name });
   }
@@ -267,9 +336,8 @@ import urllib.error
 import urllib.request
 
 _SENSITIVE = re.compile(r"(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)", re.I)
-_RUN_ID = os.environ.get("HARNESS_RUN_ID") or os.environ.get("RUN_ID")
-_CONTROLLER_URL = (os.environ.get("HARNESS_CONTROLLER_URL") or os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
-_TOKEN = os.environ.get("HARNESS_INTERNAL_TOKEN") or ""
+_EVENT_URL = (os.environ.get("HARNESS_EVENT_URL") or "").rstrip("/")
+_TOKEN = os.environ.get("HARNESS_CALLBACK_TOKEN") or ""
 
 
 def _short(value, limit=180):
@@ -305,7 +373,7 @@ def _compact(value, depth=0):
 
 
 def _emit(kind, **payload):
-    if not (_RUN_ID and _CONTROLLER_URL and _TOKEN):
+    if not (_EVENT_URL and _TOKEN):
         return
     body = {
         "type": "hermes_observer",
@@ -316,7 +384,7 @@ def _emit(kind, **payload):
         }, separators=(",", ":"), default=str),
     }
     req = urllib.request.Request(
-        f"{_CONTROLLER_URL}/api/internal/runs/{_RUN_ID}/events",
+        _EVENT_URL,
         data=json.dumps(body).encode("utf-8"),
         headers={
             "authorization": f"Bearer {_TOKEN}",
@@ -420,15 +488,22 @@ def register(ctx):
 `, { mode: 0o600 });
 }
 
-async function runHermes(prompt, work) {
+async function runHermes(work) {
   const env = { ...process.env };
   const model = work.agent?.model || process.env.HERMES_MODEL;
   if (model) env.HERMES_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
+  env.HERMES_HOME = "/workspace/.hermes";
+  env.HERMES_SESSION_ID = hermesSessionId;
+  env.HARNESS_EVENT_URL = `${callbackBase}${eventsPath}`;
+  env.HARNESS_CALLBACK_TOKEN = callbackToken;
+
   const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
+  const sessionDownload = await downloadSessionDb(hermesHome);
   const installedSkills = await installAgentSkills(env, work.agent?.skills);
 
+  const prompt = String(work.content || "");
   const promptPath = path.join(hermesHome, `prompt-${runId}.txt`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
   await writeFile(promptPath, prompt, { mode: 0o600 });
@@ -507,7 +582,9 @@ if __name__ == "__main__":
       manifestSystemPromptChars: manifestSystemPrompt.length,
       openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
       openaiApiKeyConfigured: Boolean(env.OPENAI_API_KEY),
-      hermesHomeConfigured: Boolean(hermesHome)
+      hermesHomeConfigured: Boolean(hermesHome),
+      sessionDbDownloaded: sessionDownload.downloaded,
+      sessionDbBytes: sessionDownload.bytes
     }));
     const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -537,15 +614,16 @@ if __name__ == "__main__":
     });
     child.on("exit", (code) => {
       clearTimeout(timer);
-      if (killed) return reject(new Error(`hermes turn exceeded HARNESS_TURN_TIMEOUT_MS=${turnTimeoutMs}ms`));
       const exitDiagnostic = emitRunEvent("executor_diagnostic", JSON.stringify({
         phase: "exit",
         code,
+        killed,
         stdoutChars: stdout.length,
         stdoutTrimmedChars: stdout.trim().length,
         stderrChars: stderr.length
       }));
       exitDiagnostic.finally(() => {
+        if (killed) return reject(new Error(`hermes turn exceeded HARNESS_TURN_TIMEOUT_MS=${turnTimeoutMs}ms`));
         if (code === 0) {
           const result = stdout.trim();
           if (!result) return reject(new Error(`hermes exited 0 with empty stdout; stderr chars=${stderr.length}`));
@@ -559,20 +637,23 @@ if __name__ == "__main__":
 }
 
 try {
-  const work = await getJson(`/api/internal/runs/${encodeURIComponent(runId)}/work-item`);
-  const result = await runHermes(buildPrompt(work), work);
-  await postJson(`/api/internal/runs/${encodeURIComponent(runId)}/complete`, {
-    status: "completed",
-    result
-  });
+  const result = await runHermes(payload);
+  try {
+    await uploadSessionDb("/workspace/.hermes");
+  } catch (uploadError) {
+    const message = uploadError instanceof Error ? uploadError.message : String(uploadError);
+    console.error(message);
+    await postJson(completePath, { status: "failed", error: `session-db upload failed: ${message}` }).catch((postError) => {
+      console.error(postError instanceof Error ? postError.message : String(postError));
+    });
+    process.exit(1);
+  }
+  await postJson(completePath, { status: "completed", result });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
   try {
-    await postJson(`/api/internal/runs/${encodeURIComponent(runId)}/complete`, {
-      status: "failed",
-      error: message
-    });
+    await postJson(completePath, { status: "failed", error: message });
   } catch (postError) {
     console.error(postError instanceof Error ? postError.message : String(postError));
   }

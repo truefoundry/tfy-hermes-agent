@@ -49,13 +49,6 @@ Inspect run events. For a healthy run, expect:
 For MCP-backed agents, include one prompt that forces a real MCP tool call and
 confirm `tool_start` and `tool_complete` events appear.
 
-## Snapshot Artifact Test
-
-Trigger the snapshotter job after the controller has state. Every healthy
-snapshot run must log `local snapshot written`. If `snapshot` is configured,
-it must also log `artifact snapshot written` and print a TrueFoundry artifact
-FQN.
-
 ## Slack Handoff Test
 
 Ask the user to mention the agent in a real channel:

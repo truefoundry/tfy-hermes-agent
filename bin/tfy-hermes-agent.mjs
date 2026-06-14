@@ -2,15 +2,19 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import * as readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
+const DEFAULT_VOLUME_SIZE_GI = 10;
 const REQUIRED_SECRET_KEYS = [
   "TFY_API_KEY",
-  "HARNESS-INTERNAL-TOKEN",
+  "HERMES-RUN-TOKEN-SECRET",
+  "HERMES-OPENAI-API-KEY",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
@@ -18,31 +22,46 @@ const REQUIRED_SECRET_KEYS = [
 function usage() {
   return [
     "Usage:",
-    "  tfy-hermes-agent validate <hermes.yaml> [--update] [--skip-live-checks]",
-    "  tfy-hermes-agent compile <hermes.yaml> [--out <agent-name>]",
-    "  tfy-hermes-agent deploy <hermes.yaml> [--out <agent-name>] [--update]",
+    "  tfy-hermes-agent init",
+    "  tfy-hermes-agent deploy <hermes.yaml> [--update] [--emit-manifests <dir>] [--skip-live-checks]",
     "",
-    "Live checks and deploy require TFY_HOST and TFY_API_KEY."
+    "init walks you through Slack + TrueFoundry settings and writes hermes.yaml.",
+    "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
+    "deploy requires TFY_HOST and TFY_API_KEY unless --skip-live-checks is given."
   ].join("\n");
 }
 
 function parseArgs(argv) {
-  const [command, file, ...rest] = argv;
-  const flags = {};
-  for (let index = 0; index < rest.length; index += 1) {
-    const item = rest[index];
-    if (!item.startsWith("--")) throw new Error(`unexpected argument: ${item}`);
-    const key = item.slice(2);
-    if (key === "update" || key === "skip-live-checks") {
-      flags[key] = true;
-    } else {
-      const value = rest[index + 1];
-      if (!value || value.startsWith("--")) throw new Error(`missing value for --${key}`);
-      flags[key] = value;
-      index += 1;
-    }
+  const [command, ...rest] = argv;
+  if (!command || command === "help" || command === "--help" || command === "-h") {
+    return { command: "help", file: null, flags: {} };
   }
-  return { command, file, flags };
+  if (command === "init") {
+    if (rest.length) throw new Error("init takes no arguments");
+    return { command, file: null, flags: {} };
+  }
+  if (command === "deploy") {
+    const file = rest.shift();
+    if (!file || file.startsWith("--")) throw new Error("deploy requires a hermes.yaml path");
+    const flags = {};
+    for (let index = 0; index < rest.length; index += 1) {
+      const item = rest[index];
+      if (!item.startsWith("--")) throw new Error(`unexpected argument: ${item}`);
+      const key = item.slice(2);
+      if (key === "update" || key === "skip-live-checks") {
+        flags[key] = true;
+      } else if (key === "emit-manifests") {
+        const value = rest[index + 1];
+        if (!value || value.startsWith("--")) throw new Error("missing value for --emit-manifests");
+        flags[key] = value;
+        index += 1;
+      } else {
+        throw new Error(`unknown flag: --${key}`);
+      }
+    }
+    return { command, file, flags };
+  }
+  throw new Error(`unknown command: ${command}\n\n${usage()}`);
 }
 
 function assertObject(value, label) {
@@ -69,10 +88,7 @@ function normalizeHost(value) {
   }
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("host must use http or https");
   if (parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("host must not include a path, query, or fragment");
-  return {
-    url: `${parsed.protocol}//${parsed.hostname}`,
-    hostname: parsed.hostname
-  };
+  return { url: `${parsed.protocol}//${parsed.hostname}`, hostname: parsed.hostname };
 }
 
 function workspaceName(workspaceFqn) {
@@ -117,12 +133,6 @@ function validateSkillFqn(value) {
   return /^agent-skill:[a-z0-9-]+\/[a-z0-9._-]+\/[a-z0-9._-]+:\d+$/i.test(value);
 }
 
-function validateRegistryName(value, label) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,126}$/.test(value)) {
-    throw new Error(`${label} must use letters, numbers, dots, underscores, or hyphens`);
-  }
-}
-
 function normalizeMcpUrl(value) {
   let parsed;
   try {
@@ -147,18 +157,6 @@ function normalizeGatewayUrl(value) {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function normalizeSnapshot(value) {
-  if (value == null) return { enabled: false, mlRepo: "", artifactName: "" };
-  assertObject(value, "snapshot");
-  const mlRepo = String(value.ml_repo || "").trim();
-  const artifactName = String(value.artifact_name || "").trim();
-  if (!mlRepo) throw new Error("snapshot.ml_repo is required when snapshot is set");
-  if (!artifactName) throw new Error("snapshot.artifact_name is required when snapshot is set");
-  validateRegistryName(mlRepo, "snapshot.ml_repo");
-  validateRegistryName(artifactName, "snapshot.artifact_name");
-  return { enabled: true, mlRepo, artifactName };
-}
-
 function uniqueUpperList(value, label) {
   return Array.from(new Set(stringList(value, label).map((item) => item.toUpperCase())));
 }
@@ -175,7 +173,7 @@ function normalizeSlackAccess(value) {
   return { allowedChannels, allowedUsers };
 }
 
-async function readHermesConfig(file) {
+export async function readHermesConfig(file) {
   if (!file) throw new Error("missing hermes.yaml path");
   const config = YAML.parse(await readFile(file, "utf8"));
   assertObject(config, "hermes.yaml");
@@ -192,9 +190,10 @@ async function readHermesConfig(file) {
   const invalidSkills = skills.filter((skill) => !validateSkillFqn(skill));
   if (invalidSkills.length) throw new Error(`skills must be agent-skill FQNs: ${invalidSkills.join(", ")}`);
 
-  const snapshot = normalizeSnapshot(config.snapshot);
   const slack = normalizeSlackAccess(config.slack);
   const gatewayUrl = normalizeGatewayUrl(config.gateway_url || process.env.OPENAI_BASE_URL);
+
+  const slackTeamId = String(config.slack_team_id || "").trim();
 
   return {
     name,
@@ -206,8 +205,8 @@ async function readHermesConfig(file) {
     model: String(config.model || DEFAULT_MODEL).trim(),
     gatewayUrl,
     secrets,
-    snapshot,
     slack,
+    slackTeamId,
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl)
   };
@@ -216,10 +215,9 @@ async function readHermesConfig(file) {
 function names(config) {
   return {
     secrets: config.secrets,
-    state: `${config.name}-state`,
+    volume: `${config.name}-data`,
     controller: `${config.name}-controller`,
-    executor: `${config.name}-executor`,
-    snapshotter: `${config.name}-snapshotter`
+    executor: `${config.name}-executor`
   };
 }
 
@@ -260,34 +258,20 @@ function image(dockerfilePath, command) {
   return manifest;
 }
 
-function secretsManifest(config) {
+export function volumeManifest(config) {
   return {
-    name: config.secrets,
-    type: "secret-group",
-    workspace_fqn: config.workspaceFqn,
-    secrets: {
-      TFY_API_KEY: "replace-in-truefoundry-only",
-      "HARNESS-INTERNAL-TOKEN": randomBytes(32).toString("hex"),
-      "SLACK-BOT-TOKEN": "xoxb-replace-in-truefoundry-only",
-      "SLACK-SIGNING-SECRET": "replace-in-truefoundry-only"
-    }
-  };
-}
-
-function stateManifest(config) {
-  return {
-    name: names(config).state,
+    name: names(config).volume,
     type: "volume",
     workspace_fqn: config.workspaceFqn,
     config: {
       type: "dynamic",
-      size: 20,
-      storage_class: "managed-csi-premium"
+      size: DEFAULT_VOLUME_SIZE_GI,
+      access_modes: ["ReadWriteOnce"]
     }
   };
 }
 
-function controllerManifest(config) {
+export function controllerManifest(config) {
   const resource = names(config);
   return {
     name: resource.controller,
@@ -304,11 +288,12 @@ function controllerManifest(config) {
     },
     replicas: 1,
     env: {
-      HARNESS_STATE_DIR: "/data/state",
+      STATE_ROOT: "/data",
       PUBLIC_BASE_URL: config.host.url,
       TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
+      HERMES_RUN_TOKEN_SECRET: secretRef(config, "HERMES-RUN-TOKEN-SECRET"),
+      HERMES_OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
       SLACK_SIGNING_SECRET: secretRef(config, "SLACK-SIGNING-SECRET"),
       TFY_WORKSPACE_FQN: config.workspaceFqn,
@@ -320,18 +305,20 @@ function controllerManifest(config) {
       HERMES_AGENT_MCP_SERVERS: csv(config.mcpServers),
       HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.allowedChannels),
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
+      HERMES_SLACK_TEAM_ID: config.slackTeamId,
       HERMES_MODEL: config.model,
+      HERMES_GATEWAY_URL: config.gatewayUrl,
       HERMES_EXECUTOR_NAME: resource.executor
     },
     ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
-    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }],
+    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.volume}` }],
     liveness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
     readiness_probe: { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 },
     rollout_strategy: { type: "rolling_update", max_surge_percentage: 0, max_unavailable_percentage: 100 }
   };
 }
 
-function executorManifest(config) {
+export function executorManifest(config) {
   return {
     name: names(config).executor,
     type: "job",
@@ -352,48 +339,24 @@ function executorManifest(config) {
       HOME: "/workspace",
       HERMES_HOME: "/workspace/.hermes",
       HARNESS_CONTROLLER_URL: config.host.url,
-      HARNESS_INTERNAL_TOKEN: secretRef(config, "HARNESS-INTERNAL-TOKEN"),
       HARNESS_TURN_TIMEOUT_MS: "600000",
       TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
       OPENAI_BASE_URL: config.gatewayUrl,
-      OPENAI_API_KEY: secretRef(config, "TFY_API_KEY"),
+      OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       HERMES_MODEL: config.model
     }
   };
 }
 
-function snapshotterManifest(config) {
-  const resource = names(config);
+export function secretsManifest(config) {
+  const secrets = {};
+  for (const key of REQUIRED_SECRET_KEYS) secrets[key] = "replace-in-truefoundry-only";
   return {
-    name: resource.snapshotter,
-    type: "job",
+    name: config.secrets,
+    type: "secret-group",
     workspace_fqn: config.workspaceFqn,
-    trigger: { type: "manual" },
-    concurrency_limit: 1,
-    retries: 1,
-    image: image("Dockerfile.snapshotter", "python snapshotter/snapshotter.py"),
-    resources: {
-      cpu_request: 0.1,
-      cpu_limit: 0.5,
-      memory_request: 256,
-      memory_limit: 512,
-      ephemeral_storage_request: 1000,
-      ephemeral_storage_limit: 2000
-    },
-    env: {
-      HARNESS_STATE_DIR: "/data/state",
-      HERMES_SNAPSHOT_DIR: "/data/snapshots",
-      HERMES_SNAPSHOT_RETAIN_COUNT: "50",
-      HERMES_SNAPSHOT_DISABLE_ARTIFACT_UPLOAD: config.snapshot.enabled ? "0" : "1",
-      HERMES_SNAPSHOT_ML_REPO: config.snapshot.mlRepo,
-      HERMES_SNAPSHOT_ARTIFACT_NAME: config.snapshot.artifactName,
-      HERMES_AGENT_HANDLE: config.name,
-      TFY_HOST: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY_API_KEY"),
-      TFY_WORKSPACE_FQN: config.workspaceFqn
-    },
-    mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resource.state}` }]
+    secrets
   };
 }
 
@@ -401,7 +364,7 @@ function titleFromName(name) {
   return name.split("-").map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join(" ");
 }
 
-function slackManifest(config) {
+export function slackManifest(config) {
   const appName = titleFromName(config.name);
   return {
     display_information: {
@@ -462,33 +425,6 @@ function slackManifest(config) {
   };
 }
 
-function allManifests(config) {
-  return {
-    [`${config.name}-secrets.scaffold.yaml`]: secretsManifest(config),
-    [`${config.name}-state.yaml`]: stateManifest(config),
-    [`${config.name}-controller.yaml`]: controllerManifest(config),
-    [`${config.name}-executor.yaml`]: executorManifest(config),
-    [`${config.name}-snapshotter.yaml`]: snapshotterManifest(config),
-    "slack-app-manifest.json": slackManifest(config)
-  };
-}
-
-async function writeOutput(file, value) {
-  const text = file.endsWith(".json") ? `${JSON.stringify(value, null, 2)}\n` : YAML.stringify(value, { lineWidth: 0 });
-  await writeFile(file, text);
-}
-
-async function compile(config, outDir) {
-  await mkdir(outDir, { recursive: true });
-  const files = [];
-  for (const [name, manifest] of Object.entries(allManifests(config))) {
-    const target = path.join(outDir, name);
-    await writeOutput(target, manifest);
-    files.push(target);
-  }
-  return files;
-}
-
 function liveChecksAvailable() {
   return Boolean(baseTfyUrl() && process.env.TFY_API_KEY);
 }
@@ -509,36 +445,21 @@ async function tfyFetch(apiPath, options = {}) {
   return body;
 }
 
-async function checkNameCollisions(config, allowUpdate) {
-  if (!liveChecksAvailable()) return ["Skipped live collision checks because TFY credentials are not configured."];
-  const resource = names(config);
-  const body = await tfyFetch(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`);
-  const rows = Array.isArray(body.data) ? body.data : [];
-  const applicationNames = [resource.controller, resource.executor, resource.snapshotter];
-  const existing = rows.filter((row) => applicationNames.includes(row.name || row.applicationName));
-  const hostOwners = rows.filter((row) => {
-    const ports = row.manifest?.ports || row.deployment?.manifest?.ports || [];
-    return Array.isArray(ports) && ports.some((port) => port?.host === config.host.hostname);
+async function checkWorkspace(config) {
+  const body = await tfyFetch("/api/svc/v1/workspaces?limit=500");
+  const rows = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
+  const found = rows.some((row) => {
+    const fqn = row.fqn || row.manifest?.fqn || `${row.cluster_id || row.clusterName || ""}:${row.name || row.manifest?.name || ""}`;
+    return fqn === config.workspaceFqn;
   });
-  if (existing.length && !allowUpdate) {
-    throw new Error(`component name collision: ${existing.map((row) => row.name || row.applicationName).join(", ")}. Use --update to update existing deployments.`);
-  }
-  const unexpectedHostOwners = hostOwners.filter((row) => !applicationNames.includes(row.name || row.applicationName));
-  if (unexpectedHostOwners.length) {
-    throw new Error(`host ${config.host.hostname} is already used by: ${unexpectedHostOwners.map((row) => row.name || row.applicationName).join(", ")}`);
-  }
-  return [
-    ...(existing.length ? [`Will update existing deployments: ${existing.map((row) => row.name || row.applicationName).join(", ")}`] : []),
-    ...(hostOwners.length ? [`Host ${config.host.hostname} is already attached to ${hostOwners.map((row) => row.name || row.applicationName).join(", ")}`] : [])
-  ];
+  if (!found) throw new Error(`workspace_fqn not found or not accessible: ${config.workspaceFqn}`);
 }
 
 async function checkSecretGroup(config) {
-  if (!liveChecksAvailable()) return ["Skipped live SecretGroup checks because TFY credentials are not configured."];
   const groups = await tfyFetch("/api/svc/v1/secret-groups");
   const rows = Array.isArray(groups.data) ? groups.data : [];
   const group = rows.find((row) => row.name === config.secrets || row.manifest?.name === config.secrets);
-  if (!group) throw new Error(`SecretGroup not found: ${config.secrets}`);
+  if (!group) throw new Error(`SecretGroup not found: ${config.secrets} (create it in TrueFoundry first)`);
   const groupId = group.id || group.fqn || group.name;
   const secrets = await tfyFetch("/api/svc/v1/secrets", {
     method: "POST",
@@ -547,129 +468,249 @@ async function checkSecretGroup(config) {
   const keys = new Set((Array.isArray(secrets.data) ? secrets.data : []).map((row) => row.key || row.name));
   const missing = REQUIRED_SECRET_KEYS.filter((key) => !keys.has(key));
   if (missing.length) throw new Error(`SecretGroup ${config.secrets} is missing keys: ${missing.join(", ")}`);
-  return [];
 }
 
-function collectUrls(value, urls = new Set()) {
-  if (typeof value === "string") {
-    if (value.includes("{{mcpProxyBaseURL}}")) urls.add(value.replace("{{mcpProxyBaseURL}}", "https://gateway.truefoundry.ai").replace(/\/$/, ""));
-    try {
-      const parsed = new URL(value);
-      if (["http:", "https:"].includes(parsed.protocol)) urls.add(parsed.toString().replace(/\/$/, ""));
-    } catch {}
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectUrls(item, urls);
-  } else if (value && typeof value === "object") {
-    for (const item of Object.values(value)) collectUrls(item, urls);
+async function checkCollisions(config, allowUpdate) {
+  const resource = names(config);
+  const body = await tfyFetch(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`);
+  const rows = Array.isArray(body.data) ? body.data : [];
+  const ours = [resource.controller, resource.executor];
+  const existing = rows.filter((row) => ours.includes(row.name || row.applicationName));
+  if (existing.length && !allowUpdate) {
+    throw new Error(`deployment exists: ${existing.map((row) => row.name || row.applicationName).join(", ")}. Pass --update to overwrite.`);
   }
-  return urls;
-}
-
-async function checkMcpGateway(config) {
-  if (!config.mcpServers.length) return [];
-  if (!liveChecksAvailable()) return ["Skipped live MCP Gateway checks because TFY credentials are not configured."];
-  const body = await tfyFetch("/api/svc/v1/mcp-servers");
-  const urls = collectUrls(body);
-  const missing = config.mcpServers.filter((url) => !urls.has(url));
-  if (missing.length) throw new Error(`MCP URLs are not visible through TrueFoundry MCP Gateway: ${missing.join(", ")}`);
-  return [];
-}
-
-async function checkSkills(config) {
-  if (!config.skills.length) return [];
-  if (!liveChecksAvailable()) return ["Skipped live skill checks because TFY credentials are not configured."];
-  const body = await tfyFetch("/api/ml/v1/x/agent-skill-versions/bulk-get", {
-    method: "POST",
-    body: JSON.stringify({
-      data: config.skills.map((fqn) => ({ fqn, fetch_skill_md_content: false }))
-    })
+  const hostOwners = rows.filter((row) => {
+    const ports = row.manifest?.ports || row.deployment?.manifest?.ports || [];
+    return Array.isArray(ports) && ports.some((port) => port?.host === config.host.hostname);
   });
-  const returned = new Set((Array.isArray(body.data) ? body.data : []).map((row) => row.fqn));
-  const missing = config.skills.filter((fqn) => !returned.has(fqn));
-  if (missing.length) throw new Error(`skills are not visible through TrueFoundry: ${missing.join(", ")}`);
-  return [];
-}
-
-async function checkSnapshotMlRepo(config) {
-  if (!config.snapshot.enabled) return [];
-  if (!liveChecksAvailable()) return ["Skipped live snapshot ML Repo checks because TFY credentials are not configured."];
-  const body = await tfyFetch("/api/ml/v1/ml-repos?limit=200");
-  const rows = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
-  const names = new Set(rows.map((row) => row.name || row.manifest?.name || row.fqn?.split("/").at(-1)).filter(Boolean));
-  if (!names.has(config.snapshot.mlRepo)) {
-    throw new Error(`snapshot.ml_repo not found or not accessible: ${config.snapshot.mlRepo}`);
+  const unexpected = hostOwners.filter((row) => !ours.includes(row.name || row.applicationName));
+  if (unexpected.length) {
+    throw new Error(`host ${config.host.hostname} is already used by: ${unexpected.map((row) => row.name || row.applicationName).join(", ")}`);
   }
-  return [];
 }
 
-async function validate(config, { allowUpdate = false, skipLiveChecks = false } = {}) {
-  if (skipLiveChecks) return [];
-  return [
-    ...(await checkNameCollisions(config, allowUpdate)),
-    ...(await checkSecretGroup(config)),
-    ...(await checkMcpGateway(config)),
-    ...(await checkSkills(config)),
-    ...(await checkSnapshotMlRepo(config))
-  ];
+async function liveValidate(config, { allowUpdate, skipLiveChecks }) {
+  if (skipLiveChecks) return;
+  if (!liveChecksAvailable()) throw new Error("deploy requires TFY_HOST and TFY_API_KEY (or pass --skip-live-checks)");
+  await checkWorkspace(config);
+  await checkSecretGroup(config);
+  await checkCollisions(config, allowUpdate);
 }
 
-function run(command, args) {
+function runStdin(command, args, payload) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", env: { ...process.env, TFY_HOST: baseTfyUrl() || process.env.TFY_HOST || "" } });
+    const child = spawn(command, args, {
+      stdio: ["pipe", "inherit", "inherit"],
+      env: { ...process.env, TFY_HOST: baseTfyUrl() || process.env.TFY_HOST || "" }
+    });
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${command} ${args.join(" ")} exited with ${code}`));
     });
+    child.stdin.end(payload);
   });
 }
 
-async function deploy(config, outDir, flags) {
-  if (!liveChecksAvailable()) throw new Error("deploy requires TFY_HOST and TFY_API_KEY");
-  await validate(config, { allowUpdate: Boolean(flags.update) });
-  const files = await compile(config, outDir);
-  const filesByName = new Map(files.map((file) => [path.basename(file), file]));
-  const deployFiles = [
-    `${config.name}-state.yaml`,
-    `${config.name}-controller.yaml`,
-    `${config.name}-executor.yaml`,
-    `${config.name}-snapshotter.yaml`
-  ].map((name) => filesByName.get(name)).filter(Boolean);
-  for (const file of deployFiles) await run("tfy", ["apply", "-f", file]);
-  return deployFiles;
+export function serializeManifest(manifest, filename) {
+  return filename.endsWith(".json")
+    ? `${JSON.stringify(manifest, null, 2)}\n`
+    : YAML.stringify(manifest, { lineWidth: 0 });
+}
+
+export function planManifests(config, { includeSecrets }) {
+  const list = [];
+  if (includeSecrets) list.push({ filename: `${config.name}-secrets.scaffold.yaml`, manifest: secretsManifest(config) });
+  list.push({ filename: `${config.name}-volume.yaml`, manifest: volumeManifest(config) });
+  list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
+  list.push({ filename: `${config.name}-executor.yaml`, manifest: executorManifest(config) });
+  return list;
+}
+
+async function emitManifestsToDir(items, outDir) {
+  await mkdir(outDir, { recursive: true });
+  for (const { filename, manifest } of items) {
+    await writeFile(path.join(outDir, filename), serializeManifest(manifest, filename));
+  }
+}
+
+async function applyManifests(items) {
+  for (const { filename, manifest } of items) {
+    const payload = serializeManifest(manifest, filename);
+    console.log(`tfy apply ${filename}`);
+    await runStdin("tfy", ["apply", "-f", "-"], payload);
+  }
+}
+
+async function prompt(rl, label, { def = "", required = false, validate } = {}) {
+  while (true) {
+    const suffix = def ? ` [${def}]` : "";
+    const raw = (await rl.question(`${label}${suffix}: `)).trim();
+    const value = raw || def;
+    if (!value) {
+      if (!required) return "";
+      console.error("  this field is required");
+      continue;
+    }
+    if (validate) {
+      try {
+        return validate(value);
+      } catch (error) {
+        console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+    }
+    return value;
+  }
+}
+
+async function promptList(rl, label, { validate } = {}) {
+  const raw = (await rl.question(`${label} (comma-separated, blank for none): `)).trim();
+  if (!raw) return [];
+  const items = raw.split(",").map((item) => item.trim()).filter(Boolean);
+  if (validate) for (const item of items) validate(item);
+  return items;
+}
+
+async function runInit() {
+  const rl = readline.createInterface({ input, output, terminal: true });
+  try {
+    console.log("This wizard writes hermes.yaml and slack-app-manifest.json in the current directory.");
+    console.log("");
+    const handle = await prompt(rl, "Agent handle (2-32 chars, lowercase, hyphens)", {
+      required: true,
+      validate: slugifyName
+    });
+    const agentName = await prompt(rl, "Agent display name", { def: titleFromName(handle) });
+    const description = await prompt(rl, "Agent description");
+    const model = await prompt(rl, "Model", { def: DEFAULT_MODEL });
+    const workspaceFqn = await prompt(rl, "Workspace FQN (cluster:workspace)", {
+      required: true,
+      validate: (value) => {
+        if (!value.includes(":")) throw new Error("workspace FQN must look like cluster:workspace");
+        return value.trim();
+      }
+    });
+    const gatewayUrl = await prompt(rl, "OpenAI-compatible gateway URL", {
+      required: true,
+      validate: normalizeGatewayUrl
+    });
+    const slackWorkspaceUrl = await prompt(rl, "Slack workspace URL (e.g. https://your-team.slack.com)", {
+      required: true,
+      validate: (value) => {
+        const url = new URL(value.startsWith("http") ? value : `https://${value}`);
+        if (!url.hostname.endsWith("slack.com")) throw new Error("must be a slack.com URL");
+        return url.origin;
+      }
+    });
+    const secretsName = await prompt(rl, "SecretGroup name", {
+      def: `${handle}-hermes-secrets`,
+      validate: (value) => {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,126}$/.test(value)) throw new Error("invalid SecretGroup name");
+        return value;
+      }
+    });
+    const skills = await promptList(rl, "Skill FQNs", {
+      validate: (value) => {
+        if (!validateSkillFqn(value)) throw new Error(`invalid skill FQN: ${value}`);
+      }
+    });
+    const mcpServers = await promptList(rl, "MCP server URLs", {
+      validate: normalizeMcpUrl
+    });
+
+    const config = {
+      name: handle,
+      display_name: agentName,
+      workspace_fqn: workspaceFqn,
+      description,
+      model,
+      gateway_url: gatewayUrl,
+      slack_workspace_url: slackWorkspaceUrl,
+      secrets: secretsName,
+      skills,
+      mcp_servers: mcpServers
+    };
+
+    const yamlPath = path.resolve(process.cwd(), "hermes.yaml");
+    await writeFile(yamlPath, YAML.stringify(config, { lineWidth: 0 }));
+
+    const fakeConfig = {
+      name: handle,
+      host: resolveHost(null, handle, workspaceFqn),
+      description
+    };
+    const slackPath = path.resolve(process.cwd(), "slack-app-manifest.json");
+    await writeFile(slackPath, `${JSON.stringify(slackManifest(fakeConfig), null, 2)}\n`);
+
+    console.log("");
+    console.log(`wrote ${yamlPath}`);
+    console.log(`wrote ${slackPath}`);
+    console.log("");
+    console.log("Next steps:");
+    console.log(`  1. Create a TrueFoundry SecretGroup named "${secretsName}" with these keys:`);
+    for (const key of REQUIRED_SECRET_KEYS) console.log(`       - ${key}`);
+    console.log(`  2. Install the Slack app at ${slackWorkspaceUrl}/apps using slack-app-manifest.json`);
+    console.log(`     and copy the bot token + signing secret into the SecretGroup.`);
+    console.log(`  3. Run: tfy-hermes-agent deploy hermes.yaml`);
+  } finally {
+    rl.close();
+  }
+}
+
+async function runDeploy(file, flags) {
+  const config = await readHermesConfig(file);
+  process.env.TFY_HOST ||= controlPlaneUrl(config);
+
+  await liveValidate(config, {
+    allowUpdate: Boolean(flags.update),
+    skipLiveChecks: Boolean(flags["skip-live-checks"])
+  });
+
+  const items = planManifests(config, { includeSecrets: Boolean(flags.update) });
+
+  if (flags["emit-manifests"]) {
+    await emitManifestsToDir(items, flags["emit-manifests"]);
+    console.log(`wrote ${items.length} manifest files to ${flags["emit-manifests"]}`);
+  }
+
+  await applyManifests(items);
+
+  console.log("");
+  console.log(`Controller: ${config.host.url}`);
+  console.log(`Slack Events URL: ${config.host.url}/slack/events`);
+  console.log(`Slack Interactions URL: ${config.host.url}/slack/interactions`);
 }
 
 async function main() {
-  const { command, file, flags } = parseArgs(process.argv.slice(2));
-  if (!command || command === "help" || command === "--help") {
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.command === "help") {
     console.log(usage());
     return;
   }
-  const config = await readHermesConfig(file);
-  process.env.TFY_HOST ||= controlPlaneUrl(config);
-  const outDir = flags.out || config.name;
-
-  if (command === "validate") {
-    const warnings = await validate(config, { allowUpdate: Boolean(flags.update), skipLiveChecks: Boolean(flags["skip-live-checks"]) });
-    for (const warning of warnings) console.warn(`warning: ${warning}`);
-    console.log("hermes.yaml is valid");
+  if (parsed.command === "init") {
+    await runInit();
     return;
   }
-  if (command === "compile") {
-    const files = await compile(config, outDir);
-    console.log(`wrote ${files.length} files to ${outDir}`);
+  if (parsed.command === "deploy") {
+    await runDeploy(parsed.file, parsed.flags);
     return;
   }
-  if (command === "deploy") {
-    const files = await deploy(config, outDir, flags);
-    console.log(`submitted ${files.length} TrueFoundry deployments`);
-    console.log(`Slack manifest: ${path.join(outDir, "slack-app-manifest.json")}`);
-    return;
-  }
-  throw new Error(`unknown command: ${command}\n\n${usage()}`);
+  throw new Error(`unknown command: ${parsed.command}\n\n${usage()}`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+function isDirectInvocation() {
+  if (!process.argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === process.argv[1];
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectInvocation()) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
