@@ -512,7 +512,7 @@ async function tfyFetch(apiPath, options = {}) {
 async function checkNameCollisions(config, allowUpdate) {
   if (!liveChecksAvailable()) return ["Skipped live collision checks because TFY credentials are not configured."];
   const resource = names(config);
-  const body = await tfyFetch(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`);
+  const body = await tfyFetch(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`);
   const rows = Array.isArray(body.data) ? body.data : [];
   const applicationNames = [resource.controller, resource.executor, resource.snapshotter];
   const existing = rows.filter((row) => applicationNames.includes(row.name || row.applicationName));

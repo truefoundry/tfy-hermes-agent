@@ -36,6 +36,15 @@ devrel-assistant/
 Generated manifests reference secrets through TrueFoundry SecretGroups. Do not
 commit raw secrets or generated customer manifests to this repo.
 
+Optional environment knobs used by the compiler:
+
+- `TFY_HOST`, `TFY_API_KEY` - required for live validation and `deploy`.
+- `TFY_SECRET_TENANT` - tenant slug used to infer `host` when `hermes.yaml`
+  omits it and `TFY_HOST` is not set.
+- `HERMES_REPO_URL`, `HERMES_SOURCE_REF`, `HERMES_SOURCE_BRANCH` - override the
+  git source baked into generated `build_source` blocks. Defaults to this
+  package's upstream repo on `main`.
+
 Slack uses the HTTP Events API:
 
 ```text

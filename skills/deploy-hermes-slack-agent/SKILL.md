@@ -52,7 +52,7 @@ Track this sequence and resume from the first incomplete step:
 
 - `name`: lowercase Slack-safe handle, for example `devrel-assistant`.
 - `workspace_fqn`: TrueFoundry workspace FQN, for example `tfy-ea-dev-eo-az:sai-ws`.
-- `host`: optional; infer from tenant env when available.
+- `host`: optional; inferred from `TFY_HOST` or `TFY_SECRET_TENANT` when set. If neither is set, ask the user for `host`.
 - `skills`: full FQNs only, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`.
 - `mcp_servers`: TrueFoundry MCP Gateway URLs only.
 - `secrets`: default to `<name>-hermes-secrets` if unspecified.

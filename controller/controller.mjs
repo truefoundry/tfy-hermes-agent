@@ -233,16 +233,6 @@ function parseMessageHandle(text) {
   };
 }
 
-function parseMessageRoute(text) {
-  const parsed = parseMessageHandle(text);
-  return {
-    agent: null,
-    handle: parsed.handle,
-    text: parsed.text,
-    source: parsed.handle ? "typed_handle" : null
-  };
-}
-
 function normalizeSlackChannelIds(values) {
   return Array.from(new Set((values || [])
     .map((value) => String(value || "").trim().toUpperCase())
@@ -276,7 +266,7 @@ async function slackToken() {
   return SLACK_BOT_TOKEN;
 }
 
-async function slackApi(method, body, options = {}) {
+async function slackApi(method, body) {
   const token = await slackToken();
   if (!token) throw new Error("Slack bot token is required for Slack integration");
   const res = await fetch(`https://slack.com/api/${method}`, {
@@ -495,21 +485,21 @@ function slackFeedbackBlocks(runId) {
   ];
 }
 
-async function setSlackStatus({ channel, threadTs, status = SLACK_STATUS_TEXT, teamId = null }) {
+async function setSlackStatus({ channel, threadTs, status = SLACK_STATUS_TEXT }) {
   return slackApi("assistant.threads.setStatus", {
     channel_id: channel,
     thread_ts: threadTs,
     status,
     loading_messages: slackLoadingMessages
-  }, { teamId });
+  });
 }
 
-async function clearSlackStatus({ channel, threadTs, teamId = null }) {
+async function clearSlackStatus({ channel, threadTs }) {
   return slackApi("assistant.threads.setStatus", {
     channel_id: channel,
     thread_ts: threadTs,
     status: ""
-  }, { teamId });
+  });
 }
 
 async function startSlackStream({ channel, threadTs, teamId, userId, agent }) {
@@ -527,7 +517,7 @@ async function startSlackStream({ channel, threadTs, teamId, userId, agent }) {
         status: "in_progress"
       }
     ]
-  }, { teamId });
+  });
 }
 
 function slackMarkdownChunk(text) {
@@ -537,33 +527,33 @@ function slackMarkdownChunk(text) {
   };
 }
 
-async function appendSlackStream({ channel, ts, markdownText, chunks = null, teamId = null }) {
+async function appendSlackStream({ channel, ts, markdownText, chunks = null }) {
   const body = { channel, ts };
   const allChunks = [];
   if (markdownText) allChunks.push(slackMarkdownChunk(markdownText));
   if (chunks) allChunks.push(...chunks);
   if (allChunks.length) body.chunks = allChunks;
-  return slackApi("chat.appendStream", body, { teamId });
+  return slackApi("chat.appendStream", body);
 }
 
-async function stopSlackStream({ channel, ts, markdownText = "", chunks = null, blocks = [], teamId = null }) {
+async function stopSlackStream({ channel, ts, markdownText = "", chunks = null, blocks = [] }) {
   const body = { channel, ts };
   const allChunks = [];
   if (markdownText) allChunks.push(slackMarkdownChunk(markdownText));
   if (chunks) allChunks.push(...chunks);
   if (allChunks.length) body.chunks = allChunks;
   if (blocks.length) body.blocks = blocks;
-  return slackApi("chat.stopStream", body, { teamId });
+  return slackApi("chat.stopStream", body);
 }
 
-async function postSlackMessage({ channel, threadTs, text, blocks = null, teamId = null }) {
+async function postSlackMessage({ channel, threadTs, text, blocks = null }) {
   const body = {
     channel,
     thread_ts: threadTs,
     text
   };
   if (blocks) body.blocks = blocks;
-  return slackApi("chat.postMessage", body, { teamId });
+  return slackApi("chat.postMessage", body);
 }
 
 function slackPrompt({ text, context, agent }) {
@@ -609,7 +599,7 @@ async function handleAssistantThreadStarted(payload) {
         message: "Review the visible context and call out risks or missing information."
       }
     ]
-  }, { teamId });
+  });
 }
 
 async function handleAssistantThreadContextChanged(payload) {
@@ -637,7 +627,7 @@ async function handleSlackUserMessage(payload) {
   const state = await loadState();
   const channel = event.channel;
   const threadTs = event.thread_ts || event.ts;
-  const route = parseMessageRoute(event.text);
+  const route = parseMessageHandle(event.text);
   const text = route.text;
   const existingThread = state.slack.threads[slackThreadKey({ teamId, channel, threadTs })];
   const channelType = event.channel_type || "";
@@ -664,9 +654,7 @@ async function handleSlackUserMessage(payload) {
   if (!claimedMessage) return;
 
   let agent = null;
-  if (route.agent) {
-    agent = route.agent;
-  } else if (route.handle) {
+  if (route.handle) {
     agent = agentByHandle(state, route.handle);
     if (!agent) {
       await postSlackMessage({
@@ -704,7 +692,7 @@ async function handleSlackUserMessage(payload) {
       channel_id: channel,
       thread_ts: threadTs,
       title: `${agentLabel(agent)} ${slackTitle(text)}`.slice(0, 80)
-    }, { teamId }).catch(() => {});
+    }).catch(() => {});
     await setSlackStatus({ channel, threadTs, teamId });
     stream = await startSlackStream({ channel, threadTs, teamId, userId: event.user, agent });
 
