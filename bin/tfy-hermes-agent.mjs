@@ -78,12 +78,36 @@ function normalizeHost(value) {
   };
 }
 
+function workspaceName(workspaceFqn) {
+  return workspaceFqn.split(":").at(-1);
+}
+
 function tenantFromHost(hostname) {
   const match = hostname.match(/(?:^|\.)ml\.([a-z0-9-]+)\.truefoundry\.cloud$/i)
     || hostname.match(/(?:^|\.)([a-z0-9-]+)\.truefoundry\.cloud$/i);
   if (match?.[1]) return match[1];
   if (process.env.TFY_SECRET_TENANT) return process.env.TFY_SECRET_TENANT;
   throw new Error("could not derive secret tenant from host; set TFY_SECRET_TENANT");
+}
+
+function tenantFromEnv() {
+  if (process.env.TFY_SECRET_TENANT) return process.env.TFY_SECRET_TENANT;
+  const base = baseTfyUrl();
+  if (!base) return "";
+  try {
+    return tenantFromHost(new URL(base).hostname);
+  } catch {
+    return "";
+  }
+}
+
+function resolveHost(value, name, workspaceFqn) {
+  if (String(value || "").trim()) return normalizeHost(value);
+  const tenant = tenantFromEnv();
+  if (!tenant) {
+    throw new Error("host is required unless TFY_HOST, TFY_BASE_URL, or TFY_SECRET_TENANT is set for inference");
+  }
+  return normalizeHost(`https://${name}-${workspaceName(workspaceFqn)}.ml.${tenant}.truefoundry.cloud`);
 }
 
 function stringList(value, label) {
@@ -113,15 +137,27 @@ function normalizeMcpUrl(value) {
   return parsed.toString().replace(/\/$/, "");
 }
 
+function normalizeSnapshot(value) {
+  if (value == null) return { enabled: false, mlRepo: "", artifactName: "" };
+  assertObject(value, "snapshot");
+  const mlRepo = String(value.ml_repo || "").trim();
+  const artifactName = String(value.artifact_name || "").trim();
+  if (!mlRepo) throw new Error("snapshot.ml_repo is required when snapshot is set");
+  if (!artifactName) throw new Error("snapshot.artifact_name is required when snapshot is set");
+  validateRegistryName(mlRepo, "snapshot.ml_repo");
+  validateRegistryName(artifactName, "snapshot.artifact_name");
+  return { enabled: true, mlRepo, artifactName };
+}
+
 async function readHermesConfig(file) {
   if (!file) throw new Error("missing hermes.yaml path");
   const config = YAML.parse(await readFile(file, "utf8"));
   assertObject(config, "hermes.yaml");
 
   const name = slugifyName(config.name);
-  const host = normalizeHost(config.host);
   const workspaceFqn = String(config.workspace_fqn || "").trim();
   if (!workspaceFqn.includes(":")) throw new Error("workspace_fqn is required and must look like cluster:workspace");
+  const host = resolveHost(config.host, name, workspaceFqn);
 
   const secrets = String(config.secrets || "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,126}$/.test(secrets)) throw new Error("secrets must be the TrueFoundry SecretGroup name");
@@ -130,10 +166,7 @@ async function readHermesConfig(file) {
   const invalidSkills = skills.filter((skill) => !validateSkillFqn(skill));
   if (invalidSkills.length) throw new Error(`skills must be agent-skill FQNs: ${invalidSkills.join(", ")}`);
 
-  const snapshotMlRepo = String(config.snapshot_ml_repo || name).trim();
-  const snapshotArtifactName = String(config.snapshot_artifact_name || `${name}-state-snapshots`).trim();
-  validateRegistryName(snapshotMlRepo, "snapshot_ml_repo");
-  validateRegistryName(snapshotArtifactName, "snapshot_artifact_name");
+  const snapshot = normalizeSnapshot(config.snapshot);
 
   return {
     name,
@@ -144,8 +177,7 @@ async function readHermesConfig(file) {
     instructions: String(config.instructions || "").trim(),
     model: String(config.model || DEFAULT_MODEL).trim(),
     secrets,
-    snapshotMlRepo,
-    snapshotArtifactName,
+    snapshot,
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl)
   };
@@ -359,8 +391,9 @@ function snapshotterManifest(config) {
       HARNESS_STATE_DIR: "/data/state",
       HERMES_SNAPSHOT_DIR: "/data/snapshots",
       HERMES_SNAPSHOT_RETAIN_COUNT: "50",
-      HERMES_SNAPSHOT_ML_REPO: config.snapshotMlRepo,
-      HERMES_SNAPSHOT_ARTIFACT_NAME: config.snapshotArtifactName,
+      HERMES_SNAPSHOT_DISABLE_ARTIFACT_UPLOAD: config.snapshot.enabled ? "0" : "1",
+      HERMES_SNAPSHOT_ML_REPO: config.snapshot.mlRepo,
+      HERMES_SNAPSHOT_ARTIFACT_NAME: config.snapshot.artifactName,
       HERMES_AGENT_HANDLE: config.name,
       TFY_BASE_URL: secretRef(config, "TFY_HOST"),
       TFY_HOST: secretRef(config, "TFY_HOST"),
@@ -567,12 +600,13 @@ async function checkSkills(config) {
 }
 
 async function checkSnapshotMlRepo(config) {
+  if (!config.snapshot.enabled) return [];
   if (!liveChecksAvailable()) return ["Skipped live snapshot ML Repo checks because TFY credentials are not configured."];
   const body = await tfyFetch("/api/ml/v1/ml-repos?limit=200");
   const rows = Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : [];
   const names = new Set(rows.map((row) => row.name || row.manifest?.name || row.fqn?.split("/").at(-1)).filter(Boolean));
-  if (!names.has(config.snapshotMlRepo)) {
-    throw new Error(`snapshot_ml_repo not found or not accessible: ${config.snapshotMlRepo}`);
+  if (!names.has(config.snapshot.mlRepo)) {
+    throw new Error(`snapshot.ml_repo not found or not accessible: ${config.snapshot.mlRepo}`);
   }
   return [];
 }

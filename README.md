@@ -11,7 +11,7 @@ vendor the full upstream Hermes codebase. The runtime image installs
 
 Projects should not need to copy a large agent repo just to host Hermes on
 TrueFoundry. They should be able to keep a small `hermes.yaml` in their own repo
-or render the templates here with different workspace, host, model, and secret
+or render the templates here with different workspace, optional host, model, and secret
 settings.
 
 ## Included
@@ -57,8 +57,9 @@ export HERMES_AGENT_SECRET_GROUP=devrel-assistant-hermes-secrets
 export HERMES_API_HOST=controller-sai-ws.ml.tfy-eo.truefoundry.cloud
 export HERMES_REPO_URL=https://github.com/truefoundry/tfy-hermes-agent
 export HERMES_SOURCE_REF=main
-export HERMES_SNAPSHOT_ML_REPO=devrel-assistant
-export HERMES_SNAPSHOT_ARTIFACT_NAME=devrel-assistant-state-snapshots
+# Optional: enable artifact-backed snapshots.
+# export HERMES_SNAPSHOT_ML_REPO=devrel-assistant
+# export HERMES_SNAPSHOT_ARTIFACT_NAME=devrel-assistant-state-snapshots
 
 ./scripts/render-manifests.sh
 ```
@@ -227,7 +228,8 @@ appends the final text in chunks.
 
 The target project-local input is `examples/agent.hermes.yaml`: one flat file
 that describes the agent identity, instructions, skill FQNs, MCP Gateway URLs,
-workspace, host, and per-agent SecretGroup. The compiler expands that into:
+workspace, optional host, optional snapshot artifact config, and per-agent
+SecretGroup. The compiler expands that into:
 
 - a `secrets` SecretGroup scaffold
 - a `state` volume
@@ -236,11 +238,12 @@ workspace, host, and per-agent SecretGroup. The compiler expands that into:
 - a `snapshotter` job
 - a per-agent Slack app manifest
 
-The snapshotter reads persisted controller state from the `state` volume, writes
-a local copy under `/data/snapshots`, and logs the same JSON file as a new
-TrueFoundry artifact version. TrueFoundry artifacts are immutable versions stored
-in ML Repos, so `snapshot_ml_repo` must name an ML Repo that exists and is
-accessible from the deployment workspace.
+The snapshotter always reads persisted controller state from the `state` volume
+and writes a local copy under `/data/snapshots`. If `snapshot` is configured,
+it also logs the same JSON file as a new TrueFoundry artifact version.
+TrueFoundry artifacts are immutable versions stored in ML Repos, so
+`snapshot.ml_repo` must name an ML Repo that exists and is accessible from the
+deployment workspace.
 
 Example:
 
@@ -248,7 +251,6 @@ Example:
 name: devrel-assistant
 
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
 
@@ -259,8 +261,10 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
-snapshot_ml_repo: devrel-assistant
-snapshot_artifact_name: devrel-assistant-state-snapshots
+
+snapshot:
+  ml_repo: devrel-assistant
+  artifact_name: devrel-assistant-state-snapshots
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
@@ -299,10 +303,15 @@ runtime does not have to infer it later.
 `/api/internal/*` callbacks. The compiler generates a random placeholder for
 new SecretGroup scaffolds; keep the generated value unless rotating the agent.
 
-`snapshot_ml_repo` controls where snapshot artifact versions are written. If it
-is omitted, the compiler defaults to the agent `name`. `snapshot_artifact_name`
-defaults to `<name>-state-snapshots`. Live validation checks that the ML Repo is
-visible before deployment.
+`host` is optional when `TFY_HOST`, `TFY_BASE_URL`, or `TFY_SECRET_TENANT` is
+available during compilation. In that case the compiler infers:
+`https://<name>-<workspace>.ml.<tenant>.truefoundry.cloud`. If those environment
+values are not available, set `host` explicitly.
+
+`snapshot` is optional. If omitted, the snapshotter only writes local state
+snapshots under `/data/snapshots` on the state volume. If set, `snapshot.ml_repo`
+and `snapshot.artifact_name` are required and live validation checks that the ML
+Repo is visible before deployment.
 
 At runtime, the generated executor makes the YAML entries operational before
 starting Hermes:
@@ -326,11 +335,14 @@ and swap:
 
 Compiler validation:
 
+- infers `host` from `name`, `workspace_fqn`, and tenant environment when
+  omitted
 - derives the SecretGroup tenant from `host`, with `TFY_SECRET_TENANT` as a
   fallback for non-TrueFoundry domains
 - validates skill entries as `agent-skill:<tenant>/<repo>/<name>:<version>` FQNs
 - validates MCP entries as URLs
 - with TrueFoundry credentials, checks deployment name collisions, required
-  SecretGroup keys, MCP Gateway visibility, and snapshot ML Repo access
+  SecretGroup keys, MCP Gateway visibility, and configured snapshot ML Repo
+  access
 - refuses to deploy over existing controller/executor/snapshotter names unless
   `--update` is passed

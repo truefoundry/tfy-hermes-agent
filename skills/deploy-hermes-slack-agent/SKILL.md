@@ -21,7 +21,7 @@ where:
 - The executor starts Hermes with the manifest MCP servers mounted and discovered.
 - The executor downloads manifest skill FQNs into `$HERMES_HOME/skills` before invoking Hermes.
 - Manifest `name`, `description`, and `instructions` are appended to Hermes' internal prompt as an additional system layer. Do not replace Hermes' native prompt stack, native identity, safety/tool guidance, or `SOUL.md`.
-- The snapshotter logs controller state as immutable TrueFoundry artifact versions in the configured ML Repo. A local `/data/snapshots` copy is only a fallback/debug cache.
+- The snapshotter always writes controller state to `/data/snapshots` on the state volume. If `snapshot` is configured, it also logs immutable TrueFoundry artifact versions in the configured ML Repo.
 - The Slack UX shows Hermes activity and a final answer in the same assistant thread.
 
 ## Interaction Contract
@@ -45,24 +45,23 @@ Maintain this state internally and progress in order. If a value is obvious from
 
 1. `name`: lowercase Slack-safe agent handle, for example `devrel-assistant`
 2. `workspace_fqn`: target TrueFoundry workspace, for example `tfy-ea-dev-eo-az:sai-ws`
-3. `host`: full public URL for the agent API
+3. `host`: optional full public URL for the agent API; infer it when tenant env is available
 4. `description`: one short sentence
 5. `instructions`: the agent behavior instructions
 6. `model`: default `openai-main/gpt-5.5` if the user does not specify
 7. `skills`: list of skill FQNs, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`
 8. `mcp_servers`: list of MCP Gateway URLs
 9. `secrets`: per-agent SecretGroup name, default `<name>-hermes-secrets`
-10. `snapshot_ml_repo`: ML Repo for snapshot artifacts, default `<name>`
-11. `snapshot_artifact_name`: artifact name, default `<name>-state-snapshots`
-12. `hermes.yaml`: written or updated in the user's project
-13. Slack app manifest: generated from `hermes.yaml`
-14. Slack app: manually created and installed by the user
-15. SecretGroup: manually filled by the user
-16. live validation: passed with TrueFoundry credentials
-17. deployment: compiled and applied
-18. health checks: service and Slack health reachable
-19. Slack URLs: Events API and Interactivity verified
-20. first message: real Slack mention receives a response
+10. `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
+11. `hermes.yaml`: written or updated in the user's project
+12. Slack app manifest: generated from `hermes.yaml`
+13. Slack app: manually created and installed by the user
+14. SecretGroup: manually filled by the user
+15. live validation: passed with TrueFoundry credentials
+16. deployment: compiled and applied
+17. health checks: service and Slack health reachable
+18. Slack URLs: Events API and Interactivity verified
+19. first message: real Slack mention receives a response
 
 ## Architecture Rules Learned From Production
 
@@ -75,7 +74,7 @@ Maintain this state internally and progress in order. If a value is obvious from
 - **Prompt layering is additive.** `hermes.yaml` instructions should append to Hermes' internal prompt through the executor, not replace `SOUL.md` and not get pasted into the user message as ordinary context.
 - **MCP servers are URLs only.** They must be reachable through the TrueFoundry MCP Gateway. The executor derives toolset names, writes Hermes MCP config, runs discovery synchronously, and passes those toolsets into oneshot.
 - **Skills are FQNs only.** Use `agent-skill:<tenant>/<repo>/<skill>:<version>`. The executor resolves presigned tarball URLs with `TFY_API_KEY`, extracts them into `$HERMES_HOME/skills`, and then starts Hermes.
-- **Snapshots must be artifacts.** The snapshotter must log state snapshots to TrueFoundry artifact versions in `snapshot_ml_repo`. Do not treat a copy in the state volume as sufficient snapshotting.
+- **Snapshots are volume-only unless configured.** If `snapshot` is omitted, the snapshotter only writes `/data/snapshots` on the state volume. If `snapshot` is set, it must contain `ml_repo` and `artifact_name`, and the snapshotter must log TrueFoundry artifact versions.
 - **Slack streaming does not need WebSockets.** Use Slack assistant/thread APIs over HTTP. If provider/Hermes output is buffered, Slack still shows activity first and appends the final answer when ready.
 - **A thinking card without a final answer is a bug.** Check Slack stream finalization, final markdown text formatting, and duplicate final-send paths before blaming the model.
 - **Duplicate runs usually mean duplicate Slack event routing.** Check event id dedupe, bot-message ignores, assistant-thread follow-up handling, and whether both mention and message handlers are firing for the same Slack event.
@@ -94,7 +93,7 @@ Preferred routing:
 - Use `truefoundry-status` before live operations to confirm `TFY_BASE_URL` or `TFY_HOST`, `TFY_API_KEY`, and API connectivity.
 - Use `truefoundry-workspaces` when the target `workspace_fqn` is missing or uncertain.
 - Use `truefoundry-secrets` for SecretGroup creation, placeholder key creation, and key existence checks. Still never ask the user to paste secret values into chat.
-- Use `truefoundry-ml-repos` to confirm or discover the ML Repo used by `snapshot_ml_repo`.
+- Use `truefoundry-ml-repos` to confirm or discover the ML Repo used by `snapshot.ml_repo`.
 - Use `truefoundry-deploy` for applying compiled `state`, `controller`, `executor`, and `snapshotter` manifests when available.
 - Use `truefoundry-monitor` or `truefoundry-applications` to wait for controller rollout and inspect component health.
 - Use `truefoundry-logs` for controller/executor/snapshotter failures.
@@ -141,7 +140,7 @@ Examples:
 
 - "What should the Slack handle be? Example: `devrel-assistant`."
 - "Which TrueFoundry workspace FQN should this deploy to?"
-- "What public host should Slack call for this agent?"
+- "What public host should Slack call for this agent? I can infer it if `TFY_HOST`, `TFY_BASE_URL`, or `TFY_SECRET_TENANT` is set."
 - "What should this agent do? Give me the operating instructions, not just a title."
 
 When asking about optional lists:
@@ -156,7 +155,6 @@ When all manifest fields are known, write or update `hermes.yaml`:
 name: devrel-assistant
 
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
 
@@ -167,8 +165,10 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
-snapshot_ml_repo: devrel-assistant
-snapshot_artifact_name: devrel-assistant-state-snapshots
+
+snapshot:
+  ml_repo: devrel-assistant
+  artifact_name: devrel-assistant-state-snapshots
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
@@ -252,7 +252,7 @@ Live validation should confirm:
 - SecretGroup exists and contains required keys
 - MCP server URLs are visible through TrueFoundry MCP Gateway
 - skills are valid FQNs
-- `snapshot_ml_repo` exists and is accessible
+- `snapshot.ml_repo` exists and is accessible, if `snapshot` is configured
 
 Resolve failures in-place when possible. If a failure requires user choice, ask only that choice.
 
@@ -282,10 +282,10 @@ Expected generated resources:
 <name>-snapshotter
 ```
 
-The snapshotter job should log each state snapshot to the configured artifact:
+If `snapshot` is configured, the snapshotter job should log each state snapshot to the configured artifact:
 
 ```text
-artifact:<tenant>/<snapshot_ml_repo>/<snapshot_artifact_name>:<version>
+artifact:<tenant>/<snapshot.ml_repo>/<snapshot.artifact_name>:<version>
 ```
 
 The deployment builds from the `main` branch of this package by default. Only override `HERMES_SOURCE_REF` if the user is explicitly testing an unmerged branch, and unset it after the test:
@@ -326,7 +326,7 @@ Before claiming the deployment works, run or verify at least one backend session
 - expected `skillCount`
 - `openaiBaseUrlConfigured: true`
 - `openaiApiKeyConfigured: true`
-- snapshotter logs include `artifact snapshot written`
+- snapshotter logs include `local snapshot written`; if `snapshot` is configured, they also include `artifact snapshot written`
 
 For MCP-backed agents, ask a smoke-test question that forces a tool call, then inspect events for `tool_start` and `tool_complete`.
 
@@ -367,7 +367,7 @@ While the user sends the first request, monitor controller/executor logs or run 
 - Two runs for one Slack message: inspect Slack event dedupe and ensure bot/self messages are ignored.
 - Agent says MCP tools are missing: verify `mcp_servers` in `hermes.yaml`, executor diagnostic toolsets, and Hermes MCP discovery before oneshot.
 - Agent ignores personality/instructions: verify the executor is appending manifest instructions as an ephemeral system prompt instead of only including them in the user message.
-- Snapshotter only writes `/data/snapshots`: verify `snapshot_ml_repo`, `HERMES_SNAPSHOT_ML_REPO`, `TFY_HOST`, and `TFY_API_KEY`; local copies alone are not successful snapshotting.
+- `snapshot` is configured but snapshotter only writes `/data/snapshots`: verify `snapshot.ml_repo`, `HERMES_SNAPSHOT_ML_REPO`, `TFY_HOST`, and `TFY_API_KEY`.
 - MCP validation fails: use only MCP server URLs registered and reachable through TrueFoundry MCP Gateway.
 - Skill validation fails: use full skill FQNs like `agent-skill:<tenant>/<repo>/<skill>:<version>`.
 
@@ -379,7 +379,7 @@ The onboarding is complete only when all are true:
 - Local and live validation pass.
 - Slack app is created, installed, and backed by the per-agent SecretGroup.
 - TrueFoundry secrets, state, controller, executor, and snapshotter are deployed.
-- Snapshotter successfully writes at least one TrueFoundry artifact version.
+- Snapshotter successfully writes a local state snapshot, and writes at least one TrueFoundry artifact version when `snapshot` is configured.
 - `/api/health`, `/slack/health`, and `/v1/models` respond.
 - Slack Event and Interactivity URLs are verified.
 - A real Slack mention receives a successful Hermes response.

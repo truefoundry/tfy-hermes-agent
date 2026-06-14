@@ -1,7 +1,6 @@
 name: devrel-assistant
 
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
 
@@ -12,8 +11,10 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
-snapshot_ml_repo: devrel-assistant
-snapshot_artifact_name: devrel-assistant-state-snapshots
+
+snapshot:
+  ml_repo: devrel-assistant
+  artifact_name: devrel-assistant-state-snapshots
 
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1

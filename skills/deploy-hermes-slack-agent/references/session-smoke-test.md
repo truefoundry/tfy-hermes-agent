@@ -51,9 +51,10 @@ confirm `tool_start` and `tool_complete` events appear.
 
 ## Snapshot Artifact Test
 
-Trigger the snapshotter job after the controller has state. A healthy snapshot
-run must log `artifact snapshot written` and print a TrueFoundry artifact FQN.
-Treat `local snapshot written` without an artifact FQN as a failure.
+Trigger the snapshotter job after the controller has state. Every healthy
+snapshot run must log `local snapshot written`. If `snapshot` is configured,
+it must also log `artifact snapshot written` and print a TrueFoundry artifact
+FQN.
 
 ## Slack Handoff Test
 

@@ -11,11 +11,10 @@ Collect these first:
 - `instructions`: operating behavior/personality
 - `mcp_servers`: MCP Gateway URLs only
 - `skills`: skill FQNs only, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`
-- `host`: public agent API URL
+- `host`: optional public agent API URL; infer from agent name, workspace, and tenant env when omitted
 - `workspace_fqn`: TrueFoundry workspace FQN
 - `secrets`: SecretGroup name, default `<name>-hermes-secrets`
-- `snapshot_ml_repo`: ML Repo where snapshot artifact versions are logged, default `<name>`
-- `snapshot_artifact_name`: artifact name for state snapshots, default `<name>-state-snapshots`
+- `snapshot`: optional artifact snapshot config with `ml_repo` and `artifact_name`
 
 ## hermes.yaml
 
@@ -23,7 +22,6 @@ Collect these first:
 name: devrel-assistant
 
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 
 description: Sai's DevRel operating assistant for TrueFoundry.
 
@@ -36,8 +34,10 @@ instructions: |
 model: openai-main/gpt-5.5
 
 secrets: devrel-assistant-hermes-secrets
-snapshot_ml_repo: devrel-assistant
-snapshot_artifact_name: devrel-assistant-state-snapshots
+
+snapshot:
+  ml_repo: devrel-assistant
+  artifact_name: devrel-assistant-state-snapshots
 
 skills: []
 
@@ -92,9 +92,9 @@ Apply generated manifests after validation:
 The SecretGroup scaffold is for user filling and should not overwrite existing
 secrets during normal deploy.
 
-The snapshotter must log a real artifact version on every successful snapshot.
-A local `/data/snapshots` file alone is not enough. Expected artifact FQN shape:
+If `snapshot` is configured, the snapshotter must log a real artifact version
+on every successful snapshot. Expected artifact FQN shape:
 
 ```text
-artifact:<tenant>/<snapshot_ml_repo>/<snapshot_artifact_name>:<version>
+artifact:<tenant>/<snapshot.ml_repo>/<snapshot.artifact_name>:<version>
 ```
