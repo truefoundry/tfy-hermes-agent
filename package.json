@@ -1,13 +1,20 @@
 {
   "name": "@truefoundry/tfy-hermes-agent",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Standalone TrueFoundry Hermes agent deployment compiler and runtime",
   "type": "module",
+  "bin": {
+    "tfy-hermes-agent": "bin/tfy-hermes-agent.mjs"
+  },
   "scripts": {
     "start": "node control-api/server.mjs",
     "job": "node runner/turn-runner.mjs",
-    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs"
+    "check": "node --check control-api/server.mjs && node --check runner/turn-runner.mjs && node --check bin/tfy-hermes-agent.mjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }

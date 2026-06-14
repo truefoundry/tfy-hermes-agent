@@ -1,0 +1,23 @@
+name: devrel-assistant
+
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
+
+description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
+
+instructions: |
+  You are the DevRel assistant. Be concise, operational, and evidence-driven.
+  Prefer concrete next steps, cite available context, and call out missing inputs.
+
+model: openai-main/gpt-5.5
+
+secrets: devrel-assistant-hermes-secrets
+
+skills:
+  - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
+  - agent-skill:tfy-eo/sai-mlrepo/event-follow-up:3
+
+mcp_servers:
+  - https://mcp-gateway.example.com/servers/posthog
+  - https://mcp-gateway.example.com/servers/linear
+  - https://mcp-gateway.example.com/servers/slack

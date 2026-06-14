@@ -27,6 +27,13 @@ async function postJson(apiPath, body) {
 }
 
 function buildPrompt(work) {
+  const agent = work.agent || {};
+  const identity = [
+    agent.name ? `Agent name: ${agent.name}` : "",
+    agent.handle ? `Slack handle: @${agent.handle}` : "",
+    agent.description ? `Description: ${agent.description}` : "",
+    agent.instructions ? `Instructions:\n${agent.instructions}` : ""
+  ].filter(Boolean).join("\n");
   const memory = work.memory ? `Conversation so far:\n${work.memory}\n\n` : "";
   const skills = Array.isArray(work.agent?.skills) && work.agent.skills.length
     ? `Allowed skills: ${work.agent.skills.join(", ")}\n`
@@ -34,7 +41,8 @@ function buildPrompt(work) {
   const mcp = Array.isArray(work.agent?.mcpServers) && work.agent.mcpServers.length
     ? `Allowed MCP servers: ${work.agent.mcpServers.join(", ")}\n`
     : "";
-  return `${skills}${mcp}${memory}User: ${work.content}`;
+  const preamble = identity ? `${identity}\n\n` : "";
+  return `${preamble}${skills}${mcp}${memory}User: ${work.content}`;
 }
 
 function runHermes(prompt, work) {
@@ -54,7 +62,16 @@ function runHermes(prompt, work) {
     const child = spawn("python", args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      stdout += text;
+      postJson(`/api/internal/runs/${encodeURIComponent(runId)}/events`, {
+        type: "stdout_delta",
+        text
+      }).catch((error) => {
+        console.error(error instanceof Error ? error.message : String(error));
+      });
+    });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
     child.on("error", reject);
     child.on("exit", (code) => {

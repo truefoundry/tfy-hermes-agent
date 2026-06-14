@@ -10,37 +10,69 @@ image:
     ref: ${HERMES_SOURCE_REF}
   build_spec:
     type: dockerfile
-    dockerfile_path: Dockerfile.hermes-api
+    dockerfile_path: Dockerfile.control-api
     build_context_path: .
 resources:
-  cpu_request: 0.5
-  cpu_limit: 2
-  memory_request: 1024
-  memory_limit: 4096
-  ephemeral_storage_request: 4000
-  ephemeral_storage_limit: 8000
+  cpu_request: 0.25
+  cpu_limit: 1
+  memory_request: 512
+  memory_limit: 1024
+  ephemeral_storage_request: 2000
+  ephemeral_storage_limit: 4000
 replicas: 1
 env:
-  HOME: /opt/hermes
-  HERMES_HOME: /opt/hermes
-  PORT: "8642"
-  TFY_GATEWAY_BASE_URL: tfy-secret://${TFY_SECRET_TENANT}:codex-tfy-gateway-secrets:TFY-GATEWAY-BASE-URL
-  TFY_GATEWAY_API_KEY: tfy-secret://${TFY_SECRET_TENANT}:codex-tfy-gateway-secrets:TFY-GATEWAY-API-KEY
+  NODE_ENV: production
+  PORT: "8787"
+  HOME: /data/home
+  HARNESS_STATE_DIR: /data/state
+  PUBLIC_BASE_URL: https://${HERMES_API_HOST}
+  HARNESS_API_URL: https://${HERMES_API_HOST}
+  TFY_BASE_URL: ${TFY_BASE_URL}
+  TFY_HOST: ${TFY_BASE_URL}
+  TFY_SERVICE_API_URL: ${TFY_BASE_URL}
+  TFY_API_KEY: tfy-secret://${TFY_SECRET_TENANT}:${HERMES_AGENT_SECRET_GROUP}:TFY-GATEWAY-API-KEY
+  TFY_GATEWAY_BASE_URL: tfy-secret://${TFY_SECRET_TENANT}:${HERMES_AGENT_SECRET_GROUP}:TFY-GATEWAY-BASE-URL
+  TFY_GATEWAY_API_KEY: tfy-secret://${TFY_SECRET_TENANT}:${HERMES_AGENT_SECRET_GROUP}:TFY-GATEWAY-API-KEY
+  SLACK_BOT_TOKEN: tfy-secret://${TFY_SECRET_TENANT}:${HERMES_AGENT_SECRET_GROUP}:SLACK-BOT-TOKEN
+  SLACK_SIGNING_SECRET: tfy-secret://${TFY_SECRET_TENANT}:${HERMES_AGENT_SECRET_GROUP}:SLACK-SIGNING-SECRET
+  SLACK_REDIRECT_URI: https://${HERMES_API_HOST}/slack/oauth/callback
+  TFY_SECRET_TENANT: ${TFY_SECRET_TENANT}
+  TFY_WORKSPACE_FQN: ${TFY_WORKSPACE_FQN}
+  HERMES_AGENT_HANDLE: hermes
+  HERMES_AGENT_NAME: Hermes Agent
+  HERMES_AGENT_DESCRIPTION: Standalone Hermes Slack agent
+  HERMES_AGENT_INSTRUCTIONS: ""
+  HERMES_AGENT_SKILLS: ""
+  HERMES_AGENT_MCP_SERVERS: ""
+  HERMES_AGENT_SECRET_REFS: ""
+  HARNESS_MODEL: openai-main/gpt-5.5
   HERMES_INFERENCE_MODEL: openai-main/gpt-5.5
+  HERMES_JOB_APPLICATION_NAME: hermes-turn-runner
+  HERMES_SLACK_RUN_TIMEOUT_MS: "120000"
+  HERMES_SLACK_STATUS_TEXT: "is thinking..."
+  HERMES_SLACK_LOADING_MESSAGES: "Reading the thread|Planning the next step|Running Hermes|Preparing the reply"
+  HERMES_SLACK_STREAM_CHUNK_DELAY_MS: "120"
+  HERMES_SLACK_CREATE_USERGROUPS: "false"
+  HERMES_SLACK_REQUIRE_CHANNEL_DEPLOYMENT: "false"
+  HARNESS_EXECUTION_RUNNER: truefoundry-jobs
+  HARNESS_CREDENTIAL_BROKER: truefoundry-secretgroup
+  HARNESS_SANDBOX_PROVIDER: daytona
+  HARNESS_SANDBOX_SCOPE: agent-session
+  HARNESS_SANDBOX_IDLE_TIMEOUT_SECONDS: "900"
 ports:
-  - port: 8642
+  - port: 8787
     expose: true
     host: ${HERMES_API_HOST}
     app_protocol: http
 mounts:
   - type: volume
-    mount_path: /opt/hermes
-    volume_fqn: tfy-volume://${TFY_WORKSPACE_FQN}:hermes-state
+    mount_path: /data
+    volume_fqn: tfy-volume://${TFY_WORKSPACE_FQN}:hermes-control-state
 liveness_probe:
   config:
     type: http
-    path: /health
-    port: 8642
+    path: /api/health
+    port: 8787
     scheme: HTTP
   initial_delay_seconds: 20
   period_seconds: 15
@@ -49,10 +81,14 @@ liveness_probe:
 readiness_probe:
   config:
     type: http
-    path: /health
-    port: 8642
+    path: /api/health
+    port: 8787
     scheme: HTTP
   initial_delay_seconds: 20
   period_seconds: 15
   timeout_seconds: 5
   failure_threshold: 5
+rollout_strategy:
+  type: rolling_update
+  max_surge_percentage: 0
+  max_unavailable_percentage: 100

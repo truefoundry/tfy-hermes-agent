@@ -1,4 +1,5 @@
 .rendered/
+.hermes-rendered/
 node_modules/
 __pycache__/
 *.pyc
