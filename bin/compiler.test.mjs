@@ -65,7 +65,10 @@ test("controllerManifest builds a single-replica Service pointing at Dockerfile.
   assert.match(manifest.mounts[0].volume_fqn, /devrel-assistant-data$/);
   // Per-run HMAC secret must come from the SecretGroup (no shared internal token).
   assert.match(manifest.env.HERMES_RUN_TOKEN_SECRET, /HERMES-RUN-TOKEN-SECRET/);
-  assert.match(manifest.env.HERMES_OPENAI_API_KEY, /HERMES-OPENAI-API-KEY/);
+  // TFY API key gates inbound /v1/* and is also reused for the outbound LLM gateway call;
+  // there is no separate HERMES_OPENAI_API_KEY env.
+  assert.equal(manifest.env.HERMES_OPENAI_API_KEY, undefined);
+  assert.match(manifest.env.TFY_API_KEY, /TFY-API-KEY/);
   // Health probe matches the controller's /api/health surface.
   assert.equal(manifest.liveness_probe.config.path, "/api/health");
   // Executor reference is wired so the controller can dispatch turns.
@@ -88,11 +91,10 @@ test("secretsManifest scaffolds the SecretGroup that DESIGN.md requires", () => 
   const manifest = secretsManifest(fakeConfig());
   assert.equal(manifest.type, "secret-group");
   assert.deepEqual(Object.keys(manifest.secrets).sort(), [
-    "HERMES-OPENAI-API-KEY",
     "HERMES-RUN-TOKEN-SECRET",
     "SLACK-BOT-TOKEN",
     "SLACK-SIGNING-SECRET",
-    "TFY_API_KEY"
+    "TFY-API-KEY"
   ]);
   // None of the scaffolded values should be a real-looking secret.
   for (const value of Object.values(manifest.secrets)) {
@@ -178,7 +180,7 @@ test("readHermesConfig validates and normalizes the example hermes.yaml", async 
     assert.deepEqual(parsed.slack.allowedUsers, ["U0123456789"]);
     // sanity-check that the parsed config flows through the manifest builders.
     const controller = controllerManifest(parsed);
-    assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:devrel-assistant-hermes-secrets:TFY_API_KEY");
+    assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:devrel-assistant-hermes-secrets:TFY-API-KEY");
     // Lingering reference to the removed shared HARNESS_INTERNAL_TOKEN must not exist.
     assert.equal(controller.env.HARNESS_INTERNAL_TOKEN, undefined);
     await readFile(yamlPath, "utf8"); // ensure the test file is still on disk

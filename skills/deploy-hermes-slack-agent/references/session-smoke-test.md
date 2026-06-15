@@ -12,9 +12,9 @@ GET https://<host>/slack/health
 GET https://<host>/v1/models
 ```
 
-Use the `HERMES-OPENAI-API-KEY` from the agent's SecretGroup as the `/v1/*`
+Use the `TFY-API-KEY` from the agent's SecretGroup as the `/v1/*`
 bearer token. The controller is fail-closed: it refuses to start without
-both `HERMES_OPENAI_API_KEY` and `HERMES_RUN_TOKEN_SECRET` set.
+both `TFY_API_KEY` and `HERMES_RUN_TOKEN_SECRET` set.
 
 Expected Slack health:
 

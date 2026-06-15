@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 import { createReadStream, createWriteStream } from "node:fs";
 import { stat, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -54,7 +55,10 @@ const TFY_API_KEY = process.env.TFY_API_KEY || "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
 const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
-const OPENAI_API_KEY = process.env.HERMES_OPENAI_API_KEY || "";
+// Inbound /v1/* bearer is the TFY API key. We don't mint a separate
+// HERMES_OPENAI_API_KEY: clients hitting this controller already need a TFY
+// API key for any other platform action, and per-agent isolation is best
+// handled with TrueFoundry Virtual Account PATs scoped to the agent.
 const RUN_TOKEN_SECRET = process.env.HERMES_RUN_TOKEN_SECRET || "";
 const RUN_TOKEN_TTL_SECONDS = Number(process.env.HERMES_RUN_TOKEN_TTL_SECONDS || 3 * 60 * 60);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
@@ -949,13 +953,13 @@ async function streamChatCompletion(req, res, run, { includeUsage = false } = {}
 // ---------------------------------------------------------------------------
 
 function requireOpenAIAuth(req, res) {
-  if (!OPENAI_API_KEY) return true; // assertStartupConfig already enforces presence
+  if (!TFY_API_KEY) return true; // assertStartupConfig already enforces presence
   const provided = bearerToken(req);
   if (!provided) {
     sendOpenAIError(res, 401, "missing bearer token", "authentication_error");
     return false;
   }
-  const expected = Buffer.from(OPENAI_API_KEY);
+  const expected = Buffer.from(TFY_API_KEY);
   const got = Buffer.from(provided);
   if (expected.length !== got.length || !timingSafeEqual(expected, got)) {
     sendOpenAIError(res, 401, "invalid bearer token", "authentication_error");
@@ -1031,32 +1035,28 @@ async function receiveSessionDb(req, res, hermesSessionId) {
   const finalPath = sessionDbPath(STATE_ROOT, hermesSessionId);
   const tmpPath = `${finalPath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   let received = 0;
-  let aborted = false;
 
-  const writable = createWriteStream(tmpPath, { mode: 0o600 });
+  // pipeline() handles backpressure, propagates errors, and cleans up
+  // listeners on both streams — no late events leaking past the await.
+  const counter = new Transform({
+    transform(chunk, _enc, cb) {
+      received += chunk.length;
+      if (received > MAX_SESSION_DB_BYTES) {
+        cb(Object.assign(new Error("session db exceeds limit"), { statusCode: 413 }));
+      } else {
+        cb(null, chunk);
+      }
+    }
+  });
+
   try {
-    await new Promise((resolve, reject) => {
-      req.on("data", (chunk) => {
-        received += chunk.length;
-        if (received > MAX_SESSION_DB_BYTES) {
-          aborted = true;
-          writable.destroy();
-          req.destroy();
-          reject(Object.assign(new Error("session db exceeds limit"), { statusCode: 413 }));
-        }
-      });
-      req.on("error", reject);
-      writable.on("error", reject);
-      writable.on("finish", resolve);
-      req.pipe(writable);
-    });
-    if (aborted) return;
+    await pipeline(req, counter, createWriteStream(tmpPath, { mode: 0o600 }));
     await rename(tmpPath, finalPath);
     return send(res, 200, { ok: true, bytes: received });
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => {});
     if (error.statusCode === 413) return send(res, 413, { error: error.message });
-    throw error;
+    return send(res, 500, { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -1329,6 +1329,11 @@ async function handle(req, res) {
 
     return send(res, 404, { error: "Not found." });
   } catch (error) {
+    if (res.headersSent || res.writableEnded || res.destroyed) {
+      console.error("[hermes] handler error after response started:", error?.stack || error);
+      try { res.end(); } catch {}
+      return;
+    }
     return send(res, error?.statusCode || 500, { error: error instanceof Error ? error.message : String(error) });
   }
 }
@@ -1339,7 +1344,7 @@ async function handle(req, res) {
 
 function assertStartupConfig() {
   const missing = [];
-  if (!OPENAI_API_KEY) missing.push("HERMES_OPENAI_API_KEY");
+  if (!TFY_API_KEY) missing.push("TFY_API_KEY");
   if (!RUN_TOKEN_SECRET) missing.push("HERMES_RUN_TOKEN_SECRET");
   if (missing.length) {
     console.error(`[hermes] startup failure: missing required env (${missing.join(", ")})`);
@@ -1362,7 +1367,16 @@ const stopReconciler = startReconciler(db, {
 });
 
 const httpServer = createServer((req, res) => {
-  handle(req, res).catch((error) => send(res, error?.statusCode || 500, { error: error.message }));
+  handle(req, res).catch((error) => {
+    if (res.headersSent || res.writableEnded || res.destroyed) {
+      // The response already started; log and stop. Trying to send again
+      // would crash the entire Node process.
+      console.error("[hermes] handler error after response started:", error?.stack || error);
+      try { res.end(); } catch {}
+      return;
+    }
+    send(res, error?.statusCode || 500, { error: error instanceof Error ? error.message : String(error) });
+  });
 });
 
 httpServer.listen(PORT, "0.0.0.0", () => {

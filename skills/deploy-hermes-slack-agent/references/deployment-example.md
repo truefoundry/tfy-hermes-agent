@@ -72,25 +72,24 @@ mcp_servers:
 ## SecretGroup Scaffold
 
 `deploy` creates the SecretGroup with placeholders on first run (or `--update`).
-Fill these five keys in the TrueFoundry UI before the controller will start:
+Fill these four keys in the TrueFoundry UI before the controller will start:
 
 ```yaml
 name: devrel-assistant-hermes-secrets
 type: secret-group
+integration_fqn: tfy-eo:azure:tfy-ea-dev-eo-az:secret-store:vault
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 secrets:
-  TFY_API_KEY: "replace-in-truefoundry-only"
+  TFY-API-KEY: "replace-in-truefoundry-only"
   HERMES-RUN-TOKEN-SECRET: "replace-with-32-plus-random-chars"
-  HERMES-OPENAI-API-KEY: "replace-in-truefoundry-only"
   SLACK-BOT-TOKEN: "xoxb-replace-in-truefoundry-only"
   SLACK-SIGNING-SECRET: "replace-in-truefoundry-only"
 ```
 
 What each one does:
 
-- `TFY_API_KEY` — used by the controller to trigger executor jobs and look up skills/MCP via the TrueFoundry control plane.
-- `HERMES-RUN-TOKEN-SECRET` — master HMAC secret. The controller signs a per-run callback token for each turn; the executor presents it on every callback (`/events`, `/complete`, `/session-db`). 32+ random characters.
-- `HERMES-OPENAI-API-KEY` — bearer token required on every `/v1/*` request into the controller. Fail-closed: the controller refuses to start without it.
+- `TFY-API-KEY` — used by the controller for control-plane calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer (`OPENAI_API_KEY`), AND used as the inbound `/v1/*` bearer that clients send to the controller. Fail-closed: the controller refuses to start without it.
+- `HERMES-RUN-TOKEN-SECRET` — master HMAC secret. The controller signs a per-run callback token for each turn; the executor presents it on every callback (`/events`, `/complete`, `/session-db`). 32+ random characters. Fail-closed.
 - `SLACK-BOT-TOKEN` — `xoxb-…` token from the installed Slack app.
 - `SLACK-SIGNING-SECRET` — signing secret from the installed Slack app, used to verify webhook authenticity.
 
@@ -145,7 +144,7 @@ After deploy:
 ```bash
 curl -fsS https://<host>/api/health
 curl -fsS https://<host>/slack/health
-curl -fsS -H "Authorization: Bearer <HERMES-OPENAI-API-KEY>" https://<host>/v1/models
+curl -fsS -H "Authorization: Bearer <TFY-API-KEY>" https://<host>/v1/models
 ```
 
 Expected `/slack/health` includes:
@@ -155,7 +154,7 @@ Expected `/slack/health` includes:
 
 ## Failure Handling
 
-- Controller refuses to start: confirm `HERMES-OPENAI-API-KEY` and `HERMES-RUN-TOKEN-SECRET` are set; both are fail-closed on startup.
+- Controller refuses to start: confirm `TFY-API-KEY` and `HERMES-RUN-TOKEN-SECRET` are set; both are fail-closed on startup.
 - Slack URL verification fails: confirm `/api/health`, `/slack/health`, and same-app signing secret.
 - Slack auth fails: reinstall the app and refresh `SLACK-BOT-TOKEN` in the SecretGroup.
 - No channel response: invite the Slack app to the channel and confirm scopes.

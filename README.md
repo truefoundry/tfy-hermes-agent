@@ -58,13 +58,12 @@ slack-app-manifest.json              (only `init` writes this, in cwd)
 Generated manifests reference secrets through TrueFoundry SecretGroups. Do not
 commit raw secrets or generated customer manifests to this repo.
 
-The agent's SecretGroup must contain these five keys filled in the TrueFoundry UI:
+The agent's SecretGroup must contain these four keys filled in the TrueFoundry UI:
 
-- `TFY_API_KEY`
-- `HERMES-RUN-TOKEN-SECRET` (32+ random chars; HMAC master for per-run executor callback tokens)
-- `HERMES-OPENAI-API-KEY` (bearer for `/v1/*` into the controller; fail-closed)
-- `SLACK-BOT-TOKEN`
-- `SLACK-SIGNING-SECRET`
+- `TFY-API-KEY` — used by the controller for outbound TrueFoundry calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer, and required as the inbound `/v1/*` bearer. Fail-closed on startup.
+- `HERMES-RUN-TOKEN-SECRET` — 32+ random chars; HMAC master for per-run executor callback tokens. Fail-closed on startup.
+- `SLACK-BOT-TOKEN` — `xoxb-…` from the Slack app (placeholder OK if you're not wiring Slack yet)
+- `SLACK-SIGNING-SECRET` — from the Slack app (placeholder OK)
 
 Optional environment knobs used by the CLI:
 

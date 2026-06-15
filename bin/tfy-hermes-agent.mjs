@@ -17,10 +17,12 @@ const DEFAULT_VOLUME_SIZE_GI = 10;
 // underscores are rejected by the platform. Env-var names with underscores are
 // fine; the controller/executor manifests do the mapping from hyphenated
 // secret key to underscored env var.
+//
+// The TFY API key is reused for both outbound LLM-gateway calls and the
+// inbound /v1/* bearer check, so there is no separate HERMES-OPENAI-API-KEY.
 const REQUIRED_SECRET_KEYS = [
   "TFY-API-KEY",
   "HERMES-RUN-TOKEN-SECRET",
-  "HERMES-OPENAI-API-KEY",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
@@ -266,7 +268,6 @@ export function controllerManifest(config) {
       TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
       HERMES_RUN_TOKEN_SECRET: secretRef(config, "HERMES-RUN-TOKEN-SECRET"),
-      HERMES_OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
       SLACK_BOT_TOKEN: secretRef(config, "SLACK-BOT-TOKEN"),
       SLACK_SIGNING_SECRET: secretRef(config, "SLACK-SIGNING-SECRET"),
       TFY_WORKSPACE_FQN: config.workspaceFqn,
