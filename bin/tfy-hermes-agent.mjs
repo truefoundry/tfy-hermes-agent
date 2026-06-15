@@ -431,7 +431,9 @@ async function checkSecretGroup(config) {
 
 async function checkCollisions(config, allowUpdate) {
   const r = resourceNames(config);
-  const rows = rowsOf(await tfyFetch(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`));
+  // `workspaceFqn` is camelCase on the wire; `workspace_fqn` is silently
+  // ignored and returns an unfiltered tenant page that can hide collisions.
+  const rows = rowsOf(await tfyFetch(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`));
   const ours = [r.controller, r.executor];
   const nameOf = (row) => row.name || row.applicationName;
   const existing = rows.filter((row) => ours.includes(nameOf(row)));

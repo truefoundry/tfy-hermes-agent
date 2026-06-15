@@ -88,7 +88,7 @@ secrets:
 
 What each one does:
 
-- `TFY-API-KEY` — used by the controller for control-plane calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer (`OPENAI_API_KEY`), AND used as the inbound `/v1/*` bearer that clients send to the controller. Fail-closed: the controller refuses to start without it.
+- `TFY-API-KEY` — used by the controller for control-plane calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer (`OPENAI_API_KEY`), AND used as the inbound `/v1/*` bearer that clients send to the controller. Fail-closed: the controller refuses to start without it. **Must have read access on the workspace's apps** (not just write) — the controller looks up the executor's deployment ID via `GET /api/svc/v1/apps?workspaceFqn=...&applicationName=...` and a write-only PAT will return empty data, breaking job dispatch with `active deployment not found`. Use a Virtual Account PAT scoped to `application:read` + `application:trigger`.
 - `HERMES-RUN-TOKEN-SECRET` — master HMAC secret. The controller signs a per-run callback token for each turn; the executor presents it on every callback (`/events`, `/complete`, `/session-db`). 32+ random characters. Fail-closed.
 - `SLACK-BOT-TOKEN` — `xoxb-…` token from the installed Slack app.
 - `SLACK-SIGNING-SECRET` — signing secret from the installed Slack app, used to verify webhook authenticity.
@@ -166,3 +166,7 @@ Expected `/slack/health` includes:
 - MCP tools are missing: verify `mcp_servers`, executor diagnostic toolsets, and MCP discovery before oneshot.
 - Instructions are ignored: verify manifest instructions are appended as an ephemeral system prompt.
 - `401 invalid bearer token` on internal callbacks: per-run HMAC token expired or wrong; check controller and executor agree on `HERMES_RUN_TOKEN_SECRET`.
+- `active deployment not found for job <executor>`: the `TFY-API-KEY` in the SecretGroup is missing `read` permission on the workspace's apps. The controller can dispatch but can't look up the executor's deployment ID. Replace with a PAT that has `application:read`.
+- `BUILD_FAILED` at ~90s with no log message: TrueFoundry's git puller rejects branch refs containing `/`. If `version:` in `hermes.yaml` is a slashed branch, replace with the commit SHA (`git rev-parse HEAD`) and redeploy.
+- `tfy apply` "succeeds" but no rebuild happens: `tfy apply` only triggers a build for `image.type: image`. For `image.type: build` (git sources, which is our default) use `tfy deploy --force -f <manifest>`. `tfy apply` will reuse the existing image and just roll a new pod (useful after a SecretGroup change — env vars refresh without rebuild).
+- `Invalid workspace id` on `/api/svc/v1/*` queries: the platform's query params are camelCase (`workspaceFqn`, not `workspace_fqn`). Snake-case is silently ignored upstream of the filter logic.

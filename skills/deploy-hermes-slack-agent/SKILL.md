@@ -37,7 +37,7 @@ Track this sequence and resume from the first incomplete step. Hard precondition
 3. Stop for Slack app creation from `slack-app-manifest.json`. The user creates and installs the app in their Slack workspace.
 
 4. Stop for SecretGroup filling with these four keys:
-   - `TFY-API-KEY` (used for control-plane calls, the LLM-gateway bearer, and inbound `/v1/*` auth)
+   - `TFY-API-KEY` (used for control-plane calls, the LLM-gateway bearer, and inbound `/v1/*` auth). **Needs `application:read` + `application:trigger`** on the workspace — a write-only PAT silently breaks job dispatch. Use a Virtual Account PAT, not a one-off personal token.
    - `HERMES-RUN-TOKEN-SECRET` (32+ random chars; signs per-run executor callbacks)
    - `SLACK-BOT-TOKEN` (from the installed Slack app)
    - `SLACK-SIGNING-SECRET` (from the installed Slack app)

@@ -385,8 +385,12 @@ async function triggerJob({ run, agent, content, callbackToken }) {
   if (!PUBLIC_BASE_URL) {
     throw new Error("PUBLIC_BASE_URL must be set so the executor can call back");
   }
-  const apps = await tfyGet(`/api/svc/v1/apps?workspace_fqn=${encodeURIComponent(TFY_WORKSPACE_FQN)}&limit=200`);
-  const job = (Array.isArray(apps.data) ? apps.data : []).find((app) => app.name === HERMES_EXECUTOR_NAME);
+  // applicationName + workspaceFqn (camelCase!) — the platform silently
+  // ignores `workspace_fqn` (snake_case) and returns an unfiltered first
+  // page of 200 apps tenant-wide, so the executor may not be in it. Lesson
+  // learned at deploy time, ~Jun 15 2026.
+  const apps = await tfyGet(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(TFY_WORKSPACE_FQN)}&applicationName=${encodeURIComponent(HERMES_EXECUTOR_NAME)}`);
+  const job = (Array.isArray(apps.data) ? apps.data : [])[0];
   const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
   if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_EXECUTOR_NAME}`);
 

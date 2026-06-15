@@ -60,10 +60,18 @@ commit raw secrets or generated customer manifests to this repo.
 
 The agent's SecretGroup must contain these four keys filled in the TrueFoundry UI:
 
-- `TFY-API-KEY` — used by the controller for outbound TrueFoundry calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer, and required as the inbound `/v1/*` bearer. Fail-closed on startup.
+- `TFY-API-KEY` — used by the controller for outbound TrueFoundry calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer, and required as the inbound `/v1/*` bearer. Fail-closed on startup. **Must have read permission on the workspace's apps** — a write-only PAT can dispatch jobs but can't look up the executor's deployment ID, so turns fail with `active deployment not found`. Use a Virtual Account PAT scoped to `application:read` + `application:trigger`.
 - `HERMES-RUN-TOKEN-SECRET` — 32+ random chars; HMAC master for per-run executor callback tokens. Fail-closed on startup.
 - `SLACK-BOT-TOKEN` — `xoxb-…` from the Slack app (placeholder OK if you're not wiring Slack yet)
 - `SLACK-SIGNING-SECRET` — from the Slack app (placeholder OK)
+
+Optional `hermes.yaml` fields:
+
+- `version` — git ref (branch, tag, or commit SHA) of this repo to build the
+  controller and executor images from. Defaults to `main`. **Branch names
+  with slashes** (e.g. `feat/foo`) are rejected by TrueFoundry's git puller;
+  use the commit SHA or a slash-free branch name.
+- `skills`, `mcp_servers`, `slack`, `host` — see `examples/agent.hermes.yaml`.
 
 Optional environment knobs used by the CLI:
 
@@ -71,8 +79,9 @@ Optional environment knobs used by the CLI:
 - `TFY_SECRET_TENANT` - tenant slug used to infer `host` when `hermes.yaml`
   omits it and `TFY_HOST` is not set.
 - `HERMES_REPO_URL`, `HERMES_SOURCE_REF`, `HERMES_SOURCE_BRANCH` - override the
-  git source baked into generated `build_source` blocks. Defaults to this
-  package's upstream repo on `main`.
+  git source baked into generated `build_source` blocks (`hermes.yaml`'s
+  `version` field takes precedence). Defaults to this package's upstream
+  repo on `main`.
 
 Slack uses the HTTP Events API:
 
