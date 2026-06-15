@@ -1,7 +1,7 @@
 // Unit tests for the deploy-time manifest builders. The CLI exposes
-// `init` and `deploy` only (DESIGN.md: "no compile, no validate,
-// no intermediate YAML files on disk by default"), so we exercise the
-// pure helpers directly instead of shelling out to the binary.
+// `init` and `deploy` only — no compile, no validate, no intermediate
+// YAML files on disk by default — so we exercise the pure helpers directly
+// instead of shelling out to the binary.
 
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -87,7 +87,7 @@ test("executorManifest builds a Job template that runs the executor and mounts n
   assert.match(manifest.env.OPENAI_API_KEY, /^tfy-secret:\/\//);
 });
 
-test("secretsManifest scaffolds the SecretGroup that DESIGN.md requires", () => {
+test("secretsManifest scaffolds the SecretGroup that the controller requires", () => {
   const manifest = secretsManifest(fakeConfig());
   assert.equal(manifest.type, "secret-group");
   assert.deepEqual(Object.keys(manifest.secrets).sort(), [
@@ -124,7 +124,7 @@ test("planManifests defaults to volume + controller + executor and never emits s
     "devrel-assistant-controller.yaml",
     "devrel-assistant-executor.yaml"
   ]);
-  // No snapshotter/state files: DESIGN.md deleted the entire snapshotter stack.
+  // No snapshotter/state files: the snapshotter stack was removed.
   for (const filename of filenames) {
     assert.doesNotMatch(filename, /snapshotter|state/);
   }

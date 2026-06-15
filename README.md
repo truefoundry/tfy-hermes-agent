@@ -1,101 +1,60 @@
 # tfy-hermes-agent
 
-Small TrueFoundry deployment package for Hermes Agent.
+Deploy your AI assistant powered by [Hermes Agent](https://github.com/NousResearch/hermes-agent) on TrueFoundry and use it on Slack or OpenAI-compatible API.
 
-This repo does not contain Hermes itself. It contains the wrapper needed to run
-Hermes on TrueFoundry:
+## Quickstart
 
-- `controller/` - HTTP service for health, Slack Events, Slack interactions,
-  OpenAI-compatible `/v1/*` routes, and executor callbacks.
-- `executor/` - one-turn TrueFoundry job that runs Hermes.
-- `bin/tfy-hermes-agent.mjs` - scaffolds `hermes.yaml` and deploys it.
-- `skills/deploy-hermes-slack-agent/` - full deployment runbook.
-
-State durability lives on the controller's RWO `/data` volume (one
-`wrapper.db` plus one SQLite file per Slack thread under `/data/sessions/`).
-Offsite backup is out of scope for the deployed stack; run a periodic
-`sqlite3 .backup` cron against the same volume if you need it.
-
-Install the skill into your coding agent with [`skills`](https://skills.sh):
+Let your coding agent drive it:
 
 ```bash
 npx skills add truefoundry/tfy-hermes-agent -y
 ```
 
-Add `-g` to install globally, or `-a claude-code` to target a specific agent. **Once installed, ask your coding agent "create a Hermes Slack agent" (or "deploy one") and it will drive the whole flow end-to-end** — `init` wizard, Slack app creation hand-off, SecretGroup fill, `deploy`, smoke tests — using `skills/deploy-hermes-slack-agent`. No need to remember the CLI commands yourself.
+Then say **"create a Hermes Slack agent"** to Claude Code (or any agent). It'll walk through the wizard, the Slack app, and the deploy.
 
-`hermes.yaml` is the source of truth. The CLI has two commands:
-
-```bash
-npx @truefoundry/tfy-hermes-agent init                  # interactive wizard, writes hermes.yaml + slack-app-manifest.json
-npx @truefoundry/tfy-hermes-agent deploy hermes.yaml    # validate + tfy apply (pipes manifests from memory)
-```
-
-`deploy` runs live validation against TrueFoundry as its first action and then
-applies four resources in order: SecretGroup scaffold (on first run or
-`--update`), volume PVC, controller Service, executor Job template.
-
-Useful flags:
-
-- `--update` - overwrite an existing deployment of the same name.
-- `--emit-manifests <dir>` - also write the generated YAML files to `<dir>`
-  for inspection. Without this flag, manifests are piped directly to
-  `tfy apply` from memory.
-- `--skip-live-checks` - bypass control-plane validation; only for offline
-  iteration.
-
-For agent `devrel-assistant`, `--emit-manifests ./out` writes:
-
-```text
-out/
-  devrel-assistant-secrets.scaffold.yaml
-  devrel-assistant-volume.yaml
-  devrel-assistant-controller.yaml
-  devrel-assistant-executor.yaml
-slack-app-manifest.json              (only `init` writes this, in cwd)
-```
-
-Generated manifests reference secrets through TrueFoundry SecretGroups. Do not
-commit raw secrets or generated customer manifests to this repo.
-
-The agent's SecretGroup must contain these four keys filled in the TrueFoundry UI:
-
-- `TFY-API-KEY` — used by the controller for outbound TrueFoundry calls (job dispatch, skill fetch), passed to Hermes as the LLM-gateway bearer, and required as the inbound `/v1/*` bearer. Fail-closed on startup. **Must have read permission on the workspace's apps** — a write-only PAT can dispatch jobs but can't look up the executor's deployment ID, so turns fail with `active deployment not found`. Use a Virtual Account PAT scoped to `application:read` + `application:trigger`.
-- `HERMES-RUN-TOKEN-SECRET` — 32+ random chars; HMAC master for per-run executor callback tokens. Fail-closed on startup.
-- `SLACK-BOT-TOKEN` — `xoxb-…` from the Slack app (placeholder OK if you're not wiring Slack yet)
-- `SLACK-SIGNING-SECRET` — from the Slack app (placeholder OK)
-
-Optional `hermes.yaml` fields:
-
-- `version` — git ref (branch, tag, or commit SHA) of this repo to build the
-  controller and executor images from. Defaults to `main`. **Branch names
-  with slashes** (e.g. `feat/foo`) are rejected by TrueFoundry's git puller;
-  use the commit SHA or a slash-free branch name.
-- `skills`, `mcp_servers`, `slack`, `host` — see `examples/agent.hermes.yaml`.
-
-Optional environment knobs used by the CLI:
-
-- `TFY_HOST`, `TFY_API_KEY` - required for live validation and `deploy`.
-  `TFY_HOST` doubles as the tenant source — if `hermes.yaml` omits `host`,
-  the CLI derives the agent's public host from `TFY_HOST`'s tenant slug
-  plus the agent name and workspace.
-- `HERMES_REPO_URL`, `HERMES_SOURCE_REF`, `HERMES_SOURCE_BRANCH` - override the
-  git source baked into generated `build_source` blocks (`hermes.yaml`'s
-  `version` field takes precedence). Defaults to this package's upstream
-  repo on `main`.
-
-Slack uses the HTTP Events API:
-
-```text
-https://<agent-host>/slack/events
-https://<agent-host>/slack/interactions
-```
-
-TrueFoundry services do not support Slack Socket Mode or WebSocket-dependent
-flows.
-
-Development check:
+Doing it by hand:
 
 ```bash
-npm run check
+npx @truefoundry/tfy-hermes-agent init           # writes hermes.yaml
+npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
 ```
+
+`deploy` needs `TFY_HOST` and `TFY_API_KEY` in your env.
+
+## Example `hermes.yaml`
+
+```yaml
+# Required
+name: devrel-assistant
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+gateway_url: https://your-gateway/v1
+model: openai-main/gpt-5.5
+secrets: devrel-assistant-hermes-secrets
+
+# Optional
+description: Helps with DevRel launches.
+instructions: Be concise and evidence-driven.
+slack:
+  allowed_channels: [C0123456789]
+skills:
+  - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
+mcp_servers:
+  - https://mcp-gateway.example.com/servers/linear
+```
+
+**Required:** `name`, `workspace_fqn`, `gateway_url`, `model` (whatever your gateway accepts), `secrets`.
+
+**Optional:** `version` (git ref for image build, default `main`), `host` (derived from `TFY_HOST` if omitted), `description`, `instructions`, `slack.allowed_channels`, `slack.allowed_users`, `slack_team_id`, `skills`, `mcp_servers`.
+
+## Secrets
+
+Fill these four keys in the SecretGroup named by `secrets:`. **Hyphens only** — TrueFoundry rejects underscores.
+
+| Key | What it's for |
+|---|---|
+| `TFY-API-KEY` | Outbound TF calls, LLM gateway, and inbound `/v1/*` auth. Needs `application:read` + `application:trigger`. |
+| `HERMES-RUN-TOKEN-SECRET` | 32+ random chars. HMAC key for executor callbacks. |
+| `SLACK-BOT-TOKEN` | `xoxb-…` from your Slack app. |
+| `SLACK-SIGNING-SECRET` | From your Slack app. |
+
+`SLACK-*` can be placeholders if you're not wiring Slack yet.

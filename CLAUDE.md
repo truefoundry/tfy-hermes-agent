@@ -11,13 +11,11 @@ A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://gith
 - `bin/tfy-hermes-agent.mjs` — CLI. Two commands: `init` (interactive wizard) and `deploy` (validate + apply manifests).
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
 
-Architecture spec lives in `DESIGN.md`. Read that before touching the wire protocol or storage layout.
-
 ## Don't do these things
 
 - **Don't vendor Hermes source here.** Hermes is a pip dep (`hermes-agent[mcp]==0.16.0`) pulled into the executor image. Wrapping it is fine; modifying its internals is not.
 - **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. The 4 keys are `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
-- **Don't write to the controller's volume from the executor.** The executor uses its container's ephemeral FS. Session DBs travel over HTTP. See DESIGN.md.
+- **Don't write to the controller's volume from the executor.** The executor uses its container's ephemeral FS. Session DBs travel over HTTP.
 - **Don't use the TrueFoundry Python SDK.** Use `tfy` CLI, the deploy skills, or raw REST endpoints (`/api/svc/v1/*`, `/api/ml/v1/*`). The SDK has Pydantic v1 issues on Python 3.13+.
 - **Don't add a new env knob for something `hermes.yaml` could express.** Prefer manifest fields.
 - **Don't try TrueFoundry's ingress-level `auth: { type: basic_auth }`** on the same port that serves Slack. Slack webhooks can't speak Basic. We tried; we reverted. See git log for `Wire ingress-level basic_auth` and its revert.

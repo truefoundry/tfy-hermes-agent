@@ -3,8 +3,7 @@
 // HTTP service in front of a single Hermes agent. Speaks Slack and the
 // OpenAI-compatible APIs to clients; dispatches per-turn TrueFoundry jobs
 // (executor) and shuttles the per-thread session DB between this pod's
-// RWO PVC and the ephemeral executor container. See DESIGN.md for the
-// full picture.
+// RWO PVC and the ephemeral executor container.
 
 import { createServer } from "node:http";
 import { createReadStream, createWriteStream } from "node:fs";
