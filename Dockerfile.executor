@@ -4,10 +4,10 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_HOME=/workspace/.hermes \
     HOME=/workspace
 
-# Debian bookworm ships Node 18; we need >=20. Pull Node 22 from nodesource.
+# Debian bookworm ships Node 18; we want current LTS (24). Pull from nodesource.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git gnupg ripgrep && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get purge -y --auto-remove gnupg && \
     rm -rf /var/lib/apt/lists/* && \

@@ -31,7 +31,7 @@
     "check": "node --check controller/controller.mjs && node --check executor/executor.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && npm test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
