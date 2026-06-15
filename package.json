@@ -8,27 +8,33 @@
   },
   "files": [
     "AGENTS.md",
+    "DESIGN.md",
     "Dockerfile.controller",
     "Dockerfile.executor",
-    "Dockerfile.snapshotter",
     "bin/tfy-hermes-agent.mjs",
     "controller/controller.mjs",
+    "controller/db.mjs",
+    "controller/openai-adapter.mjs",
+    "controller/pubsub.mjs",
+    "controller/reconciler.mjs",
+    "controller/slack.mjs",
+    "controller/sse.mjs",
+    "controller/tokens.mjs",
     "examples/agent.hermes.yaml",
     "executor/executor.mjs",
-    "skills/",
-    "snapshotter/snapshotter.py"
+    "skills/"
   ],
   "scripts": {
     "start": "node controller/controller.mjs",
     "executor": "node executor/executor.mjs",
-    "snapshot": "python3 snapshotter/snapshotter.py",
-    "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs",
-    "check": "node --check controller/controller.mjs && node --check executor/executor.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && python3 -m py_compile snapshotter/snapshotter.py && npm test"
+    "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs controller/session-continuity.test.mjs",
+    "check": "node --check controller/controller.mjs && node --check executor/executor.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && npm test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
+    "better-sqlite3": "^11.5.0",
     "yaml": "^2.9.0"
   }
 }

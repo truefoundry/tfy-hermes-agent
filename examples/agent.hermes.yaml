@@ -1,5 +1,9 @@
 name: devrel-assistant
 
+# Optional. Git ref (branch, tag, or commit SHA) of truefoundry/tfy-hermes-agent
+# to build the controller and executor images from. Defaults to `main`.
+# version: main
+
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
@@ -14,15 +18,12 @@ gateway_url: https://your-openai-compatible-gateway/v1
 
 secrets: devrel-assistant-hermes-secrets
 
-snapshot:
-  ml_repo: devrel-assistant
-  artifact_name: devrel-assistant-state-snapshots
-
 # Optional. Omit this block or leave either list empty for unrestricted access.
+# Defaults: open to all users and all channels when this block is absent.
 slack:
-  channels:
+  allowed_channels:
     - C0123456789
-  users:
+  allowed_users:
     - U0123456789
 
 skills:
