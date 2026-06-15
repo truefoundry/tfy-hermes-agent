@@ -70,13 +70,14 @@ Resource references:
 - `model` is in the model list reachable from the key.
 
 Secrets:
-- The `secrets` SecretGroup exists in the workspace and contains all five required keys, or the key has permission to create the SecretGroup.
+- The `secrets` SecretGroup exists in the workspace and contains all four required keys, or the key has permission to create the SecretGroup.
 
 ## Input Rules
 
 - `name`: lowercase Slack-safe handle, for example `devrel-assistant`.
 - `workspace_fqn`: TrueFoundry workspace FQN, for example `tfy-ea-dev-eo-az:sai-ws`.
-- `host`: optional; inferred from `TFY_HOST` or `TFY_SECRET_TENANT` when set. If neither is set, ask the user for `host`.
+- `version`: optional git ref (branch, tag, or commit SHA) of `truefoundry/tfy-hermes-agent` to build the controller/executor images from. Defaults to `main`. **Slashed branch names** (e.g. `feat/foo`) are rejected by the TrueFoundry git puller — use the commit SHA (`git rev-parse HEAD`) for those.
+- `host`: optional; inferred from `TFY_HOST` (the tenant slug is parsed out of it). If `TFY_HOST` isn't set, ask the user for `host` directly.
 - `gateway_url`: required OpenAI-compatible gateway URL used by the executor for Hermes model calls.
 - `skills`: full FQNs with pinned versions only, for example `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`. Floating tags are rejected.
 - `mcp_servers`: TrueFoundry MCP Gateway URLs only.
@@ -103,7 +104,7 @@ When stopping, give exactly one concrete task and the file/path/name the user ne
 The flow is complete only when:
 
 - `hermes.yaml` exists and `deploy` succeeds (live validation passed and `tfy apply` reported success for `secrets`, `volume`, `controller`, and `executor`).
-- Slack app is installed and backed by the per-agent SecretGroup with all five required keys filled.
+- Slack app is installed and backed by the per-agent SecretGroup with all four required keys filled.
 - `/api/health`, `/slack/health`, and `/v1/models` respond.
 - Session smoke tests pass (see `references/session-smoke-test.md`).
 - Slack Events and Interactivity URLs are verified in Slack settings.

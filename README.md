@@ -22,7 +22,7 @@ Install the skill into your coding agent with [`skills`](https://skills.sh):
 npx skills add truefoundry/tfy-hermes-agent -y
 ```
 
-Add `-g` to install globally, or `-a claude-code` to target a specific agent.
+Add `-g` to install globally, or `-a claude-code` to target a specific agent. **Once installed, ask your coding agent "create a Hermes Slack agent" (or "deploy one") and it will drive the whole flow end-to-end** — `init` wizard, Slack app creation hand-off, SecretGroup fill, `deploy`, smoke tests — using `skills/deploy-hermes-slack-agent`. No need to remember the CLI commands yourself.
 
 `hermes.yaml` is the source of truth. The CLI has two commands:
 
@@ -76,8 +76,9 @@ Optional `hermes.yaml` fields:
 Optional environment knobs used by the CLI:
 
 - `TFY_HOST`, `TFY_API_KEY` - required for live validation and `deploy`.
-- `TFY_SECRET_TENANT` - tenant slug used to infer `host` when `hermes.yaml`
-  omits it and `TFY_HOST` is not set.
+  `TFY_HOST` doubles as the tenant source — if `hermes.yaml` omits `host`,
+  the CLI derives the agent's public host from `TFY_HOST`'s tenant slug
+  plus the agent name and workspace.
 - `HERMES_REPO_URL`, `HERMES_SOURCE_REF`, `HERMES_SOURCE_BRANCH` - override the
   git source baked into generated `build_source` blocks (`hermes.yaml`'s
   `version` field takes precedence). Defaults to this package's upstream

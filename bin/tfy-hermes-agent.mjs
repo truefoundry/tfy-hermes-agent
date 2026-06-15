@@ -100,21 +100,17 @@ function tenantFromHost(hostname) {
   const match = hostname.match(/(?:^|\.)ml\.([a-z0-9-]+)\.truefoundry\.cloud$/i)
     || hostname.match(/(?:^|\.)([a-z0-9-]+)\.truefoundry\.cloud$/i);
   if (match?.[1]) return match[1];
-  if (process.env.TFY_SECRET_TENANT) return process.env.TFY_SECRET_TENANT;
-  throw new Error("could not derive secret tenant from host; set TFY_SECRET_TENANT");
+  throw new Error(`could not derive tenant from host '${hostname}'`);
 }
 
 function resolveHost(value, name, workspaceFqn) {
   if (String(value || "").trim()) return normalizeHost(value);
-  // Tenant inference: explicit env var beats TFY_HOST parsing.
-  let tenant = process.env.TFY_SECRET_TENANT || "";
-  if (!tenant) {
-    const base = baseTfyUrl();
-    if (base) {
-      try { tenant = tenantFromHost(new URL(base).hostname); } catch { /* fall through */ }
-    }
-  }
-  if (!tenant) throw new Error("host is required unless TFY_HOST or TFY_SECRET_TENANT is set for inference");
+  // Derive the tenant from TFY_HOST. Anything that calls `deploy` needs
+  // TFY_HOST set anyway (for control-plane calls), so there's no scenario
+  // where we have neither host nor TFY_HOST.
+  const base = baseTfyUrl();
+  if (!base) throw new Error("host is required unless TFY_HOST is set (so the tenant can be inferred)");
+  const tenant = tenantFromHost(new URL(base).hostname);
   const workspaceName = workspaceFqn.split(":").at(-1);
   return normalizeHost(`https://${name}-${workspaceName}.ml.${tenant}.truefoundry.cloud`);
 }
