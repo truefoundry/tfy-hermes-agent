@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Debian bookworm ships Node 18; we want current LTS (24). Pull from nodesource.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl git gnupg ripgrep && \
-    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get purge -y --auto-remove gnupg && \
     rm -rf /var/lib/apt/lists/* && \
