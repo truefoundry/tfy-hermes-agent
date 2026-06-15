@@ -1310,6 +1310,10 @@ async function handle(req, res) {
 
     const runMatch = path.match(/^\/api\/runs\/([^/]+)$/);
     if (runMatch && method === "GET") {
+      // Returns the full run row (status, result, session id, etc.).
+      // Gate it behind the same bearer as /v1/* so a leaked run id alone
+      // does not reveal the conversation.
+      if (!requireOpenAIAuth(req, res)) return;
       const run = rowToRun(stmts.getRunById.get(runMatch[1]));
       return run ? send(res, 200, { run }) : send(res, 404, { error: "run not found" });
     }
