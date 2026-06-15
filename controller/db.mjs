@@ -1,8 +1,7 @@
 // Wrapper SQLite database: schema, migrations, and helpers.
 //
-// The controller is the only writer. PRAGMAs and table definitions follow
-// DESIGN.md verbatim. Hermes session files live alongside wrapper.db as
-// opaque blobs at ${stateRoot}/sessions/<id>.db.
+// The controller is the only writer. Hermes session files live alongside
+// wrapper.db as opaque blobs at ${stateRoot}/sessions/<id>.db.
 
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -91,7 +90,7 @@ const SCHEMA_STATEMENTS = [
 ];
 
 /**
- * Current epoch milliseconds as an integer. Matches DESIGN.md's `now()`.
+ * Current epoch milliseconds as an integer.
  */
 export function now() {
   return Date.now();

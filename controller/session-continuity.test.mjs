@@ -1,5 +1,5 @@
-// Session continuity test (DESIGN.md: "Slack thread = Hermes session.
-// One-to-one mapping in slack_threads. The mapping is permanent.")
+// Session continuity test. Slack thread = Hermes session, one-to-one in
+// slack_threads, and the mapping is permanent.
 //
 // Exercises the wrapper.db tables and supporting primitives that keep a
 // Slack conversation stitched together across executor turns:

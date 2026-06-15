@@ -1,6 +1,6 @@
 // Periodic reconciler for stuck runs and Slack dedup TTL cleanup.
 //
-// Responsibilities (per DESIGN.md):
+// Responsibilities:
 //   - Flip 'queued' runs to 'dispatched' (or re-trigger idempotently) when
 //     they have aged past dispatchTtlMs without an executor heartbeat.
 //   - Mark 'dispatched'/'running' runs 'failed' if they exceed runTtlMs

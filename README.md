@@ -61,5 +61,4 @@ Fill these four keys in the SecretGroup named by `secrets:`. **Hyphens only** �
 
 ## More
 
-- `DESIGN.md` — wire protocol and storage.
 - `npm run check` — run the tests.

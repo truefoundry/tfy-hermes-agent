@@ -1,4 +1,4 @@
-// Per-run HMAC token utility (DESIGN.md: per-run tokens, not shared secrets).
+// Per-run HMAC token utility. Per-run, not shared.
 // Format: "v1.<runId>.<exp>.<hexSig>" where hexSig = HMAC-SHA256(secret, runId + "|" + exp).
 
 import { createHmac, timingSafeEqual } from 'node:crypto';

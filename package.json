@@ -8,7 +8,6 @@
   },
   "files": [
     "AGENTS.md",
-    "DESIGN.md",
     "Dockerfile.controller",
     "Dockerfile.executor",
     "bin/tfy-hermes-agent.mjs",

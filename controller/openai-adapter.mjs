@@ -1,7 +1,7 @@
 // Pure builders for OpenAI-compatible response shapes.
 //
-// The controller passes a `run` row (see DESIGN.md `runs` schema) plus the
-// configured model identifier; these helpers translate that into the JSON
+// The controller passes a `run` row (see the `runs` table in db.mjs) plus
+// the configured model identifier; these helpers translate that into the JSON
 // objects the OpenAI Responses and Chat Completions APIs return. They have
 // no IO of their own so they are trivial to unit-test in isolation.
 
