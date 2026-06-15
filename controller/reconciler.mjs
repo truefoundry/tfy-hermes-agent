@@ -90,19 +90,18 @@ export function startReconciler(db, {
         logger?.log?.(`[reconciler] queued run ${row.id} found on platform (state=${probe.state ?? "unknown"}); marked dispatched`);
         continue;
       }
-      if (typeof tfyTriggerJob !== "function") {
-        logger?.warn?.(`[reconciler] queued run ${row.id} stale but no trigger function configured`);
-        continue;
-      }
-      try {
-        const trigger = await tfyTriggerJob(row.id);
-        markDispatched.run(JSON.stringify({ recovered_by: "reconciler", trigger }), nowMs, row.id);
-        logger?.log?.(`[reconciler] re-triggered queued run ${row.id}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        markFailed.run(`reconciler: re-trigger failed: ${message}`, nowMs, row.id);
-        logger?.error?.(`[reconciler] failed to re-trigger run ${row.id}: ${message}`);
-      }
+      // The run's prompt is not persisted in the runs table — it only lives
+      // in the signed work payload that was passed to the original Trigger
+      // Job call. If no platform job exists for this run AND the dispatch
+      // window has elapsed, the most honest thing to do is mark it failed
+      // and let the user resend. Re-triggering with an empty prompt would
+      // produce a meaningless run.
+      markFailed.run(
+        "reconciler: queued past dispatch TTL with no platform job found; resend the message",
+        nowMs,
+        row.id
+      );
+      logger?.warn?.(`[reconciler] queued run ${row.id} stale and not on platform; marked failed`);
     }
   }
 
