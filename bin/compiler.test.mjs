@@ -150,7 +150,7 @@ test("readHermesConfig validates and normalizes the example hermes.yaml", async 
   try {
     const yamlPath = path.join(dir, "agent.hermes.yaml");
     // Mirror examples/agent.hermes.yaml with a deterministic host override
-    // so the test does not rely on TFY_SECRET_TENANT inference.
+    // so the test does not rely on TFY_HOST tenant inference.
     const config = {
       name: "devrel-assistant",
       workspace_fqn: "tfy-aws-use1:sai-ws",
