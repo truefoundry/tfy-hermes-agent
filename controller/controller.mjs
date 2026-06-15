@@ -52,15 +52,6 @@ const PORT = Number(process.env.PORT || 8787);
 const STATE_ROOT = process.env.STATE_ROOT || "/data";
 const TFY_HOST = (process.env.TFY_HOST || "").replace(/\/+$/, "");
 const TFY_API_KEY = process.env.TFY_API_KEY || "";
-// Mirror of the basic_auth.username/password set on the TF ingress port.
-// When both are set, the controller validates Authorization: Basic locally
-// too (defense in depth). When unset, any Basic header is trusted as
-// ingress-validated.
-const BASIC_AUTH_USER = process.env.HERMES_BASIC_AUTH_USER || "";
-const BASIC_AUTH_PASS = process.env.HERMES_BASIC_AUTH_PASS || "";
-const BASIC_AUTH_EXPECTED = BASIC_AUTH_USER && BASIC_AUTH_PASS
-  ? Buffer.from(`${BASIC_AUTH_USER}:${BASIC_AUTH_PASS}`, "utf8").toString("base64")
-  : "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
 const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
@@ -136,27 +127,6 @@ function sendOpenAIError(res, status, message, type = "invalid_request_error", p
 function bearerToken(req) {
   const match = String(req.headers["authorization"] || "").match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : "";
-}
-
-function basicAuthOk(req) {
-  const match = String(req.headers["authorization"] || "").match(/^Basic\s+(\S+)$/i);
-  if (!match) return false;
-  // If the controller knows the expected basic auth creds (because the
-  // manifest mirrored basic_auth into env), enforce them locally too.
-  // Otherwise trust the TF ingress that already let this request through.
-  if (!BASIC_AUTH_EXPECTED) return true;
-  const got = Buffer.from(match[1]);
-  const expected = Buffer.from(BASIC_AUTH_EXPECTED);
-  return got.length === expected.length && timingSafeEqual(got, expected);
-}
-
-// Per-run HMAC tokens travel in X-Hermes-Run-Token because the Authorization
-// header is reserved for ingress-level basic auth when that is enabled.
-// Authorization: Bearer is accepted as a fallback for setups without basic auth.
-function runTokenFromReq(req) {
-  const fromHeader = String(req.headers["x-hermes-run-token"] || "").trim();
-  if (fromHeader) return fromHeader;
-  return bearerToken(req);
 }
 
 function newRunId() {
@@ -984,12 +954,6 @@ async function streamChatCompletion(req, res, run, { includeUsage = false } = {}
 
 function requireOpenAIAuth(req, res) {
   if (!TFY_API_KEY) return true; // assertStartupConfig already enforces presence
-  // TF ingress validates Authorization: Basic before requests reach us when
-  // basic_auth is configured on the port. Accept that as a valid credential —
-  // the ingress is the perimeter, and falling through here only happens for
-  // ingress-passed traffic anyway. Bearer = TFY_API_KEY is the fallback for
-  // setups without basic auth.
-  if (basicAuthOk(req)) return true;
   const provided = bearerToken(req);
   if (!provided) {
     sendOpenAIError(res, 401, "missing bearer token", "authentication_error");
@@ -1005,14 +969,14 @@ function requireOpenAIAuth(req, res) {
 }
 
 function requireRunToken(req, res, runId) {
-  const token = runTokenFromReq(req);
+  const token = bearerToken(req);
   if (!token) {
-    send(res, 401, { error: "missing run token" });
+    send(res, 401, { error: "missing bearer token" });
     return false;
   }
   const result = verifyAndExtract({ token, secret: RUN_TOKEN_SECRET });
   if (!result.ok) {
-    send(res, 401, { error: `invalid run token (${result.reason})` });
+    send(res, 401, { error: `invalid bearer token (${result.reason})` });
     return false;
   }
   // Timing-safe comparison of token-bound runId against URL :id.

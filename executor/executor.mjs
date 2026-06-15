@@ -40,21 +40,7 @@ const eventsPath = `/api/internal/runs/${encodeURIComponent(runId)}/events`;
 const sessionDbPath = `/api/internal/runs/${encodeURIComponent(runId)}/session-db`;
 const completePath = `/api/internal/runs/${encodeURIComponent(runId)}/complete`;
 
-// When the controller's TF ingress requires basic auth, the executor must
-// satisfy it on every callback. The Authorization header is reserved for
-// Basic in that case, so the per-run HMAC token rides in X-Hermes-Run-Token.
-const basicAuthUser = process.env.HARNESS_BASIC_AUTH_USER || "";
-const basicAuthPass = process.env.HARNESS_BASIC_AUTH_PASS || "";
-const basicAuthHeader = basicAuthUser && basicAuthPass
-  ? `Basic ${Buffer.from(`${basicAuthUser}:${basicAuthPass}`, "utf8").toString("base64")}`
-  : "";
-
-const authHeaders = (extra = {}) => {
-  const headers = { "x-hermes-run-token": callbackToken, ...extra };
-  if (basicAuthHeader) headers.authorization = basicAuthHeader;
-  else headers.authorization = `Bearer ${callbackToken}`;  // back-compat when no basic auth
-  return headers;
-};
+const authHeaders = (extra = {}) => ({ authorization: `Bearer ${callbackToken}`, ...extra });
 
 async function postJson(apiPath, body) {
   const res = await fetch(`${callbackBase}${apiPath}`, {
@@ -71,19 +57,14 @@ const _literalRe = (v) => v && v.length >= 12
   ? new RegExp(String(v).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g") : null;
 const _workB64Re = _literalRe(workB64);
 const _tokenRe = _literalRe(callbackToken);
-const _basicHeaderRe = _literalRe(basicAuthHeader.replace(/^Basic\s+/, ""));
-const _basicPassRe = _literalRe(basicAuthPass);
 
 function redact(text) {
   let out = String(text || "")
     .replace(/\b(?:xoxb|xoxp|xapp)-[a-zA-Z0-9-]+/g, "slack-token-redacted")
     .replace(/\bsk-[A-Za-z0-9_-]{20,}/g, "sk-redacted")
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer redacted")
-    .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, "Basic redacted");
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer redacted");
   if (_workB64Re) out = out.replace(_workB64Re, "harness-work-b64-redacted");
   if (_tokenRe) out = out.replace(_tokenRe, "harness-callback-token-redacted");
-  if (_basicHeaderRe) out = out.replace(_basicHeaderRe, "basic-auth-redacted");
-  if (_basicPassRe) out = out.replace(_basicPassRe, "basic-auth-pass-redacted");
   return out;
 }
 
@@ -275,17 +256,9 @@ async function writeHermesObserverPlugin(home) {
   await writeFile(path.join(pluginDir, "__init__.py"), String.raw`
 import json, os, re, time, urllib.request
 
-import base64
-
 _SENSITIVE = re.compile(r"(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)", re.I)
 _EVENT_URL = (os.environ.get("HARNESS_EVENT_URL") or "").rstrip("/")
 _TOKEN = os.environ.get("HARNESS_CALLBACK_TOKEN") or ""
-_BASIC_USER = os.environ.get("HARNESS_BASIC_AUTH_USER") or ""
-_BASIC_PASS = os.environ.get("HARNESS_BASIC_AUTH_PASS") or ""
-_BASIC_HEADER = (
-    "Basic " + base64.b64encode(f"{_BASIC_USER}:{_BASIC_PASS}".encode("utf-8")).decode("ascii")
-    if _BASIC_USER and _BASIC_PASS else ""
-)
 
 def _short(value, limit=180):
     text = str(value)
@@ -321,12 +294,10 @@ def _emit(kind, **payload):
     if not (_EVENT_URL and _TOKEN):
         return
     text = json.dumps({"kind": kind, "created_at": time.time(), **payload}, separators=(",", ":"), default=str)
-    headers = {"x-hermes-run-token": _TOKEN, "content-type": "application/json"}
-    headers["authorization"] = _BASIC_HEADER if _BASIC_HEADER else f"Bearer {_TOKEN}"
     req = urllib.request.Request(
         _EVENT_URL,
         data=json.dumps({"type": "hermes_observer", "text": text}).encode("utf-8"),
-        headers=headers,
+        headers={"authorization": f"Bearer {_TOKEN}", "content-type": "application/json"},
         method="POST",
     )
     try:

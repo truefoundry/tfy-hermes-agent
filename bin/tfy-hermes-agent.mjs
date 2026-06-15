@@ -179,25 +179,6 @@ export async function readHermesConfig(file) {
     throw new Error("version must be a git branch, tag, or commit SHA");
   }
 
-  // Optional ingress-level basic auth. When set, TrueFoundry's ingress
-  // enforces it BEFORE traffic reaches the container — clients must send
-  // Authorization: Basic <base64(user:pass)>. Slack webhook delivery cannot
-  // do that, so enabling basic_auth on the only port breaks Slack.
-  let basicAuth = null;
-  if (config.basic_auth) {
-    assertObject(config.basic_auth, "basic_auth");
-    const username = String(config.basic_auth.username || "").trim();
-    const password = String(config.basic_auth.password || "").trim();
-    if (!username || !password) throw new Error("basic_auth requires both username and password");
-    if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) {
-      throw new Error("basic_auth.username must be 1-64 alnum/dot/underscore/dash chars");
-    }
-    if (!/^[\x21-\x7e]{1,256}$/.test(password)) {
-      throw new Error("basic_auth.password must be 1-256 printable ASCII chars (no spaces)");
-    }
-    basicAuth = { username, password };
-  }
-
   return {
     name,
     workspaceFqn,
@@ -212,8 +193,7 @@ export async function readHermesConfig(file) {
     slackTeamId: String(config.slack_team_id || "").trim(),
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl),
-    version,
-    basicAuth
+    version
   };
 }
 
@@ -301,26 +281,9 @@ export function controllerManifest(config) {
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_SLACK_TEAM_ID: config.slackTeamId,
       HERMES_MODEL: config.model,
-      HERMES_EXECUTOR_NAME: r.executor,
-      // Mirror the basic_auth creds into the controller env so the app can
-      // validate the Basic header itself, not blindly trust whatever set the
-      // Authorization to "Basic …" (defense in depth if pod traffic ever
-      // bypasses the TF ingress).
-      ...(config.basicAuth ? {
-        HERMES_BASIC_AUTH_USER: config.basicAuth.username,
-        HERMES_BASIC_AUTH_PASS: config.basicAuth.password
-      } : {})
+      HERMES_EXECUTOR_NAME: r.executor
     },
-    ports: [{
-      port: 8787,
-      protocol: "TCP",
-      expose: true,
-      host: config.host.hostname,
-      app_protocol: "http",
-      // TF ingress enforces basic auth before requests reach the container
-      // when set. Slack webhooks cannot satisfy basic auth — see DESIGN.md.
-      ...(config.basicAuth ? { auth: { type: "basic_auth", username: config.basicAuth.username, password: config.basicAuth.password } } : {})
-    }],
+    ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${r.volume}` }],
     liveness_probe: probe,
     readiness_probe: probe,
@@ -352,15 +315,7 @@ export function executorManifest(config) {
       // Hermes calls the TrueFoundry LLM gateway with this bearer; the gateway
       // authenticates with the TFY API key, not the controller's inbound bearer.
       OPENAI_API_KEY: secretRef(config, "TFY-API-KEY"),
-      HERMES_MODEL: config.model,
-      // When the controller's port has basic_auth, the executor's callbacks
-      // (events/complete/session-db) must pass that same basic auth. We carry
-      // the per-run HMAC token in X-Hermes-Run-Token so Authorization stays
-      // free for Basic.
-      ...(config.basicAuth ? {
-        HARNESS_BASIC_AUTH_USER: config.basicAuth.username,
-        HARNESS_BASIC_AUTH_PASS: config.basicAuth.password
-      } : {})
+      HERMES_MODEL: config.model
     }
   };
 }
