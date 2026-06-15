@@ -311,7 +311,9 @@ export function executorManifest(config) {
       TFY_HOST: controlPlaneUrl(config),
       TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
       OPENAI_BASE_URL: config.gatewayUrl,
-      OPENAI_API_KEY: secretRef(config, "HERMES-OPENAI-API-KEY"),
+      // Hermes calls the TrueFoundry LLM gateway with this bearer; the gateway
+      // authenticates with the TFY API key, not the controller's inbound bearer.
+      OPENAI_API_KEY: secretRef(config, "TFY-API-KEY"),
       HERMES_MODEL: config.model
     }
   };
