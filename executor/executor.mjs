@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import tar from "tar";
+import { extract as tarExtract } from "tar";
 
 const errMsg = (e) => e instanceof Error ? e.message : String(e);
 
@@ -226,7 +226,7 @@ async function installAgentSkills(env, skills) {
 
     await rm(dest, { recursive: true, force: true });
     await mkdir(dest, { recursive: true });
-    await tar.extract({
+    await tarExtract({
       file: tarPath, cwd: dest, strict: true,
       filter: (entryPath) => !isUnsafeTarPath(entryPath)
     });

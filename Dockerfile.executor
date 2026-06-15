@@ -4,15 +4,19 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_HOME=/workspace/.hermes \
     HOME=/workspace
 
+# Debian bookworm ships Node 18; we need >=20. Pull Node 22 from nodesource.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm ripgrep && \
+    apt-get install -y --no-install-recommends ca-certificates curl git gnupg ripgrep && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get purge -y --auto-remove gnupg && \
     rm -rf /var/lib/apt/lists/* && \
     python -m pip install --no-cache-dir --upgrade pip && \
     python -m pip install --no-cache-dir "hermes-agent[mcp]==0.16.0"
 
 WORKDIR /opt/tfy-hermes-agent
-COPY executor/package.json ./executor/package.json
-RUN cd executor && npm install --omit=dev --no-audit --no-fund
+COPY executor/package.json executor/package-lock.json ./executor/
+RUN cd executor && npm ci --omit=dev --no-audit --no-fund
 
 COPY executor ./executor
 
