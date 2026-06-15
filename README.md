@@ -1,6 +1,6 @@
 # tfy-hermes-agent
 
-Run a [Hermes Agent](https://github.com/NousResearch/hermes-agent) on TrueFoundry with Slack and an OpenAI-compatible API.
+Deploy your AI assistant powered by [Hermes Agent](https://github.com/NousResearch/hermes-agent) on TrueFoundry and use it on Slack or OpenAI-compatible API.
 
 ## Quickstart
 
