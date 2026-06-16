@@ -26,9 +26,17 @@ Keep the conversation moving one missing input or one manual task at a time.
 
 Track this sequence and resume from the first incomplete step. Hard precondition before step 1: `TFY_HOST` and `TFY_API_KEY` must be set in the local environment and authenticate against the target host. If missing, stop and ask the user to authenticate before continuing.
 
+Install from the repo (GitHub only, not on npm):
+
+```bash
+git clone https://github.com/truefoundry/tfy-hermes-agent.git && cd tfy-hermes-agent && npm ci
+```
+
+Or: `npm install -g github:truefoundry/tfy-hermes-agent`
+
 1. If `hermes.yaml` does not exist, run the interactive wizard:
    ```bash
-   npx @truefoundry/tfy-hermes-agent init
+   node bin/tfy-hermes-agent.mjs init
    ```
    This writes `hermes.yaml` and `slack-app-manifest.json` in the current directory and prints the SecretGroup name plus the required keys.
 
@@ -44,7 +52,7 @@ Track this sequence and resume from the first incomplete step. Hard precondition
 
 5. Deploy. `deploy` runs live validation against TrueFoundry first; if any check fails it stops without applying.
    ```bash
-   npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
+   node bin/tfy-hermes-agent.mjs deploy hermes.yaml
    ```
    Pass `--update` to overwrite an existing deployment, `--emit-manifests <dir>` to also write the YAML files to disk, or `--skip-live-checks` only when iterating offline.
 

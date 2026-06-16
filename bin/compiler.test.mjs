@@ -4,9 +4,10 @@
 // instead of shelling out to the binary.
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import YAML from "yaml";
 
@@ -18,8 +19,11 @@ import {
   slackManifest,
   planManifests,
   serializeManifest,
-  readHermesConfig
+  readHermesConfig,
+  isDirectInvocation
 } from "./tfy-hermes-agent.mjs";
+
+const cliPath = fileURLToPath(new URL("./tfy-hermes-agent.mjs", import.meta.url));
 
 function fakeConfig(overrides = {}) {
   return {
@@ -42,6 +46,19 @@ function fakeConfig(overrides = {}) {
     ...overrides
   };
 }
+
+test("isDirectInvocation follows npm bin symlinks to the CLI entrypoint", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "tfy-hermes-cli-"));
+  try {
+    const linkPath = path.join(dir, "tfy-hermes-agent");
+    await symlink(cliPath, linkPath);
+    assert.equal(isDirectInvocation(cliPath), true);
+    assert.equal(isDirectInvocation(linkPath), true);
+    assert.equal(isDirectInvocation(fileURLToPath(import.meta.url)), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("volumeManifest provisions one RWO controller PVC at the configured workspace", () => {
   const manifest = volumeManifest(fakeConfig());

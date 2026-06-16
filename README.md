@@ -2,22 +2,42 @@
 
 Deploy your AI assistant powered by [Hermes Agent](https://github.com/NousResearch/hermes-agent) on TrueFoundry and use it on Slack or OpenAI-compatible API.
 
+Distributed from GitHub only — not on the npm registry.
+
+## Install
+
+Requires **Node 22+** and the [`tfy` CLI](https://docs.truefoundry.com).
+
+```bash
+git clone https://github.com/truefoundry/tfy-hermes-agent.git
+cd tfy-hermes-agent
+npm ci
+```
+
+Or install the CLI globally from GitHub:
+
+```bash
+npm install -g github:truefoundry/tfy-hermes-agent
+```
+
 ## Quickstart
 
-Let your coding agent drive it:
+With a coding agent:
 
 ```bash
 npx skills add truefoundry/tfy-hermes-agent -y
 ```
 
-Then say **"create a Hermes Slack agent"** to Claude Code (or any agent). It'll walk through the wizard, the Slack app, and the deploy.
+Then say **"create a Hermes Slack agent"**.
 
-Doing it by hand:
+By hand:
 
 ```bash
-npx @truefoundry/tfy-hermes-agent init           # writes hermes.yaml
-npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
+node bin/tfy-hermes-agent.mjs init
+node bin/tfy-hermes-agent.mjs deploy hermes.yaml
 ```
+
+If installed globally, use `tfy-hermes-agent` instead of `node bin/tfy-hermes-agent.mjs`.
 
 `deploy` needs `TFY_HOST` and `TFY_API_KEY` in your env.
 
@@ -42,7 +62,7 @@ mcp_servers:
   - https://mcp-gateway.example.com/servers/linear
 ```
 
-**Required:** `name`, `workspace_fqn`, `gateway_url`, `model` (whatever your gateway accepts), `secrets`.
+**Required:** `name`, `workspace_fqn`, `gateway_url`, `model`, `secrets`.
 
 **Optional:** `version` (git ref for image build, default `main`), `host` (derived from `TFY_HOST` if omitted), `description`, `instructions`, `slack.allowed_channels`, `slack.allowed_users`, `slack_team_id`, `skills`, `mcp_servers`.
 
