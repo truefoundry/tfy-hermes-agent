@@ -20,7 +20,8 @@ import {
   planManifests,
   serializeManifest,
   readHermesConfig,
-  isDirectInvocation
+  isDirectInvocation,
+  generateRunTokenSecret
 } from "./tfy-hermes-agent.mjs";
 
 const cliPath = fileURLToPath(new URL("./tfy-hermes-agent.mjs", import.meta.url));
@@ -46,6 +47,12 @@ function fakeConfig(overrides = {}) {
     ...overrides
   };
 }
+
+test("generateRunTokenSecret returns 64 hex chars (32 bytes)", () => {
+  const secret = generateRunTokenSecret();
+  assert.match(secret, /^[0-9a-f]{64}$/);
+  assert.notEqual(generateRunTokenSecret(), generateRunTokenSecret());
+});
 
 test("isDirectInvocation follows npm bin symlinks to the CLI entrypoint", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "tfy-hermes-cli-"));
