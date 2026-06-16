@@ -6,39 +6,80 @@ Distributed from GitHub only — not on the npm registry.
 
 ---
 
-## Add this to any codebase
+## Prerequisites
 
-From your project directory (where you want `hermes.yaml` to live):
+You need two CLIs and tenant credentials:
+
+| Tool | Install | Used for |
+|---|---|---|
+| **tfy-hermes-agent** | `npm install github:truefoundry/tfy-hermes-agent` | `init`, manifest generation, `deploy` orchestration |
+| **tfy** (TrueFoundry CLI) | `pip install -U "truefoundry"` | `tfy apply` / `tfy deploy` to push manifests to your tenant |
+
+Also requires **Node 22+** (for tfy-hermes-agent) and **Python 3.9+** (for the tfy CLI).
+
+Authenticate the tfy CLI against your tenant:
 
 ```bash
-npm install github:truefoundry/tfy-hermes-agent
+pip install -U "truefoundry"
+tfy login --host https://<your-tenant>.truefoundry.cloud
 ```
 
-Or install the CLI globally:
-
-```bash
-npm install -g github:truefoundry/tfy-hermes-agent
-```
-
-You also need **Node 22+**, the [`tfy` CLI](https://docs.truefoundry.com), and these env vars when deploying:
+Or set env vars (used by both `tfy` and `tfy-hermes-agent deploy`):
 
 ```bash
 export TFY_HOST=https://<your-tenant>.truefoundry.cloud
 export TFY_API_KEY=<your-pat>
 ```
 
+Verify:
+
+```bash
+tfy version
+tfy-hermes-agent help   # if installed globally; else: npx tfy-hermes-agent help
+```
+
+---
+
+## Add this to any codebase
+
+From your project directory (where you want `hermes.yaml` to live):
+
+```bash
+pip install -U "truefoundry"
+npm install github:truefoundry/tfy-hermes-agent
+```
+
+Or install tfy-hermes-agent globally:
+
+```bash
+npm install -g github:truefoundry/tfy-hermes-agent
+```
+
 ---
 
 ## End-to-end steps (in order)
 
-### 1. Install the CLI
+### 1. Install both CLIs
+
+**TrueFoundry CLI** (applies manifests to your tenant):
+
+```bash
+pip install -U "truefoundry"
+tfy login --host https://<your-tenant>.truefoundry.cloud
+```
+
+**Hermes deploy CLI** (generates manifests and calls `tfy apply`):
 
 ```bash
 npm install github:truefoundry/tfy-hermes-agent
 # or: npm install -g github:truefoundry/tfy-hermes-agent
 ```
 
-If installed locally, prefix commands with `npx tfy-hermes-agent` or `node node_modules/@truefoundry/tfy-hermes-agent/bin/tfy-hermes-agent.mjs`.
+If tfy-hermes-agent is installed locally, use `npx tfy-hermes-agent` or:
+
+```bash
+node node_modules/@truefoundry/tfy-hermes-agent/bin/tfy-hermes-agent.mjs
+```
 
 ### 2. Get a TrueFoundry API key
 
