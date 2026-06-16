@@ -42,7 +42,7 @@ const USAGE = [
   "  tfy-hermes-agent init [--api-only]",
   "  tfy-hermes-agent deploy <hermes.yaml> [--update] [--emit-manifests <dir>] [--skip-live-checks]",
   "",
-  "init walks you through hermes.yaml settings (required + optional fields) and writes .hermes-secrets.local.",
+  "init walks you through agent settings (required + optional fields) and writes <name>.hermes.yaml plus .hermes-secrets.local.",
   "init --api-only skips Slack file output and Slack optional prompts.",
   "deploy auto-creates the SecretGroup and sets HERMES-RUN-TOKEN-SECRET + TFY-API-KEY from credentials.json.",
   "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
@@ -748,10 +748,11 @@ async function runInit(flags = {}) {
   try {
     console.log(
       apiOnly
-        ? "This wizard writes hermes.yaml and .hermes-secrets.local in the current directory.\n"
-        : "This wizard writes hermes.yaml, slack-app-manifest.json, and .hermes-secrets.local in the current directory.\n"
+        ? "This wizard writes <name>.hermes.yaml and .hermes-secrets.local in the current directory.\n"
+        : "This wizard writes <name>.hermes.yaml, slack-app-manifest.json, and .hermes-secrets.local in the current directory.\n"
     );
     const handle = await prompt(rl, "Agent handle (2-32 chars, lowercase, hyphens)", { required: true, validate: slugifyName });
+    const yamlFileName = `${handle}.hermes.yaml`;
     const description = await prompt(rl, "Agent description");
     const model = await prompt(rl, "Model", { def: DEFAULT_MODEL });
     const workspaceFqn = await prompt(rl, "Workspace FQN (cluster:workspace)", {
@@ -812,7 +813,7 @@ async function runInit(flags = {}) {
     if (skills.length) hermesDoc.skills = skills;
     if (mcpServers.length) hermesDoc.mcp_servers = mcpServers;
 
-    const yamlPath = path.resolve(process.cwd(), "hermes.yaml");
+    const yamlPath = path.resolve(process.cwd(), yamlFileName);
     await writeFile(yamlPath, YAML.stringify(hermesDoc, { lineWidth: 0 }));
 
     if (!apiOnly) {
@@ -839,7 +840,7 @@ async function runInit(flags = {}) {
     console.log("If updating an existing deployment, keep the SecretGroup value you already use.\n");
     console.log("Next steps:");
     if (apiOnly) {
-      console.log("  1. Run: tfy-hermes-agent deploy hermes.yaml");
+      console.log(`  1. Run: tfy-hermes-agent deploy ${yamlFileName}`);
       console.log("     No manual secret steps — deploy creates the SecretGroup and sets");
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY from credentials.json automatically.");
       console.log("  2. Call /v1/chat/completions on the controller host to verify.");
@@ -847,7 +848,7 @@ async function runInit(flags = {}) {
       console.log(`  1. Install the Slack app at ${SLACK_APPS_URL}`);
       console.log("     Create New App → From an app manifest → paste slack-app-manifest.json → Install App.");
       console.log("     Copy SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET from the app settings.");
-      console.log("  2. Run: tfy-hermes-agent deploy hermes.yaml");
+      console.log(`  2. Run: tfy-hermes-agent deploy ${yamlFileName}`);
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY are set automatically — no manual step.");
       console.log("     Then paste your Slack tokens into SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET");
       console.log("     in the SecretGroup (the only secrets you enter by hand).");

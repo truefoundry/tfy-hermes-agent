@@ -44,7 +44,7 @@ tfy-hermes-agent help   # if installed globally; else: npx tfy-hermes-agent help
 
 ## Add this to any codebase
 
-From your project directory (where you want `hermes.yaml` to live):
+From your project directory (where you want `<name>.hermes.yaml` to live):
 
 ```bash
 pip install -U "truefoundry"
@@ -100,7 +100,7 @@ tfy-hermes-agent init
 # API-only (no Slack): tfy-hermes-agent init --api-only
 ```
 
-This writes `hermes.yaml`, `slack-app-manifest.json`, and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
+This writes `<name>.hermes.yaml` (from the agent handle), `slack-app-manifest.json`, and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
 
 The wizard asks required fields first, then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from `hermes.yaml`. The `secrets` field is only a name — `deploy` creates the SecretGroup.
 

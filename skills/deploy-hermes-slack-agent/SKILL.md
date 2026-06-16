@@ -61,7 +61,7 @@ tfy-hermes-agent init
 # API-only: tfy-hermes-agent init --api-only
 ```
 
-This writes `hermes.yaml`, `slack-app-manifest.json` (unless `--api-only`), and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
+This writes `<name>.hermes.yaml` (from the agent handle), `slack-app-manifest.json` (unless `--api-only`), and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
 
 **Init wizard prompts**
 

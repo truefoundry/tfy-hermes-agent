@@ -67,7 +67,7 @@ tfy-hermes-agent init
 # API-only: tfy-hermes-agent init --api-only
 ```
 
-Writes `hermes.yaml`, `slack-app-manifest.json` (unless `--api-only`), and `.hermes-secrets.local` (generated HMAC secret).
+Writes `<name>.hermes.yaml` (from the agent handle), `slack-app-manifest.json` (unless `--api-only`), and `.hermes-secrets.local` (generated HMAC secret).
 
 **Wizard prompts:** required fields (`name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` name), then optional (`version`, `host`, `instructions`, `skills`, `mcp_servers`, and Slack allowlists — blank skips, omitted from yaml). `--api-only` skips Slack file and Slack optional prompts.
 
