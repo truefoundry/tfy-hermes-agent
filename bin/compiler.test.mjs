@@ -21,7 +21,9 @@ import {
   serializeManifest,
   readHermesConfig,
   isDirectInvocation,
-  generateRunTokenSecret
+  generateRunTokenSecret,
+  parseHermesSecretsLocalContent,
+  runTokenNeedsWrite
 } from "./tfy-hermes-agent.mjs";
 
 const cliPath = fileURLToPath(new URL("./tfy-hermes-agent.mjs", import.meta.url));
@@ -47,6 +49,19 @@ function fakeConfig(overrides = {}) {
     ...overrides
   };
 }
+
+test("parseHermesSecretsLocalContent reads HERMES-RUN-TOKEN-SECRET from init output", () => {
+  const text = "# comment\nHERMES-RUN-TOKEN-SECRET=abc123def456\n";
+  assert.equal(parseHermesSecretsLocalContent(text), "abc123def456");
+  assert.equal(parseHermesSecretsLocalContent(""), null);
+});
+
+test("runTokenNeedsWrite treats placeholders and short values as unset", () => {
+  assert.equal(runTokenNeedsWrite(null), true);
+  assert.equal(runTokenNeedsWrite("replace-in-truefoundry-only"), true);
+  assert.equal(runTokenNeedsWrite("tooshort"), true);
+  assert.equal(runTokenNeedsWrite("a".repeat(32)), false);
+});
 
 test("generateRunTokenSecret returns 64 hex chars (32 bytes)", () => {
   const secret = generateRunTokenSecret();

@@ -27,6 +27,16 @@ const REQUIRED_SECRET_KEYS = [
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
+const SECRET_PLACEHOLDER_SLACK = "pending-slack-setup";
+const SECRET_PLACEHOLDER_TFY = "pending-tfy-api-key";
+const SECRET_PLACEHOLDER_VALUES = new Set([
+  "",
+  "replace-in-truefoundry-only",
+  SECRET_PLACEHOLDER_SLACK,
+  SECRET_PLACEHOLDER_TFY,
+  "pending",
+  "pending-slack-setup"
+]);
 
 const USAGE = [
   "Usage:",
@@ -426,6 +436,131 @@ async function checkSecretGroup(config) {
   if (missing.length) throw new Error(`SecretGroup ${config.secrets} is missing keys: ${missing.join(", ")}`);
 }
 
+function parseHermesSecretsLocalContent(text) {
+  const match = String(text || "").match(/^HERMES-RUN-TOKEN-SECRET=(.+)$/m);
+  return match ? match[1].trim() : null;
+}
+
+function runTokenNeedsWrite(value) {
+  const text = String(value || "").trim();
+  return !text || SECRET_PLACEHOLDER_VALUES.has(text) || text.length < 32;
+}
+
+async function readHermesSecretsLocal(hermesFile) {
+  const secretsPath = path.join(path.dirname(path.resolve(hermesFile)), ".hermes-secrets.local");
+  try {
+    return parseHermesSecretsLocalContent(await readFile(secretsPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function findSecretGroupRow(config) {
+  const groups = rowsOf(await tfyFetch("/api/svc/v1/secret-groups"));
+  return groups.find((row) => row.name === config.secrets || row.manifest?.name === config.secrets) || null;
+}
+
+async function discoverSecretStoreIntegrationId() {
+  const body = await tfyFetch("/api/svc/v1/provider-accounts?type=secret-store");
+  for (const row of rowsOf(body)) {
+    for (const integration of row.integrations || []) {
+      const id = integration?.id || integration?.fqn;
+      if (id) return id;
+    }
+  }
+  throw new Error("no secret-store integration found; create the SecretGroup in TrueFoundry UI");
+}
+
+async function listSecretEntries(groupId) {
+  const body = await tfyFetch("/api/svc/v1/secrets", {
+    method: "POST",
+    body: JSON.stringify({ secretGroupId: groupId, limit: 100, offset: 0 })
+  });
+  return rowsOf(body);
+}
+
+async function fetchSecretValue(secretId) {
+  const body = await tfyFetch(`/api/svc/v1/secrets/${encodeURIComponent(secretId)}`);
+  return body?.value ?? body?.manifest?.value ?? body?.data?.value ?? null;
+}
+
+function defaultSecretValue(key, tfyApiKey) {
+  if (key === "TFY-API-KEY") return tfyApiKey || SECRET_PLACEHOLDER_TFY;
+  if (key.startsWith("SLACK-")) return SECRET_PLACEHOLDER_SLACK;
+  return SECRET_PLACEHOLDER_TFY;
+}
+
+async function buildSecretsPayloadForPut(entries, runToken, tfyApiKey) {
+  const byKey = new Map(entries.map((entry) => [entry.key || entry.name, entry]));
+  const payload = [];
+  for (const key of REQUIRED_SECRET_KEYS) {
+    if (key === "HERMES-RUN-TOKEN-SECRET") {
+      payload.push({ key, value: runToken });
+      continue;
+    }
+    const entry = byKey.get(key);
+    if (entry?.id) {
+      const value = await fetchSecretValue(entry.id);
+      if (value != null && !SECRET_PLACEHOLDER_VALUES.has(String(value).trim())) {
+        payload.push({ key, value: String(value) });
+        continue;
+      }
+    }
+    payload.push({ key, value: defaultSecretValue(key, tfyApiKey) });
+  }
+  return payload;
+}
+
+async function ensureSecretGroup(config, hermesFile, { skipLiveChecks }) {
+  if (skipLiveChecks || !liveChecksAvailable()) return;
+
+  let runToken = await readHermesSecretsLocal(hermesFile);
+  if (!runToken) {
+    runToken = generateRunTokenSecret();
+    console.log("generated HERMES-RUN-TOKEN-SECRET (no .hermes-secrets.local beside hermes.yaml)");
+  }
+
+  const tfyApiKey = String(process.env.TFY_API_KEY || "").trim();
+  const group = await findSecretGroupRow(config);
+
+  if (!group) {
+    const integrationId = await discoverSecretStoreIntegrationId();
+    await tfyFetch("/api/svc/v1/secret-groups", {
+      method: "POST",
+      body: JSON.stringify({
+        name: config.secrets,
+        workspaceFqn: config.workspaceFqn,
+        integrationId,
+        secrets: REQUIRED_SECRET_KEYS.map((key) => ({
+          key,
+          value: key === "HERMES-RUN-TOKEN-SECRET"
+            ? runToken
+            : defaultSecretValue(key, tfyApiKey)
+        }))
+      })
+    });
+    console.log(`created SecretGroup ${config.secrets} and set HERMES-RUN-TOKEN-SECRET automatically`);
+    return;
+  }
+
+  const groupId = group.id || group.fqn || group.name;
+  const entries = await listSecretEntries(groupId);
+  const byKey = new Map(entries.map((entry) => [entry.key || entry.name, entry]));
+  const hermesEntry = byKey.get("HERMES-RUN-TOKEN-SECRET");
+
+  if (hermesEntry?.id) {
+    const current = await fetchSecretValue(hermesEntry.id);
+    if (!runTokenNeedsWrite(current)) return;
+  }
+
+  const payload = await buildSecretsPayloadForPut(entries, runToken, tfyApiKey);
+  await tfyFetch(`/api/svc/v1/secret-groups/${encodeURIComponent(groupId)}`, {
+    method: "PUT",
+    body: JSON.stringify({ secrets: payload })
+  });
+  console.log(`set HERMES-RUN-TOKEN-SECRET in SecretGroup ${config.secrets}`);
+}
+
 async function checkCollisions(config, allowUpdate) {
   const r = resourceNames(config);
   // `workspaceFqn` is camelCase on the wire; `workspace_fqn` is silently
@@ -605,13 +740,11 @@ async function runInit() {
     console.log(`  ${runTokenSecret}`);
     console.log("If updating an existing deployment, keep the SecretGroup value you already use.\n");
     console.log("Next steps:");
-    console.log(`  1. Create a TrueFoundry SecretGroup named "${secretsName}" and set:`);
-    console.log(`       - HERMES-RUN-TOKEN-SECRET  (use the value above)`);
-    console.log(`       - TFY-API-KEY              (your tenant PAT)`);
-    console.log(`       - SLACK-BOT-TOKEN          (from Slack after install, or placeholder)`);
-    console.log(`       - SLACK-SIGNING-SECRET     (from Slack after install, or placeholder)`);
+    console.log(`  1. Run: tfy-hermes-agent deploy hermes.yaml`);
+    console.log(`     deploy creates the SecretGroup if needed and sets HERMES-RUN-TOKEN-SECRET automatically.`);
+    console.log(`     It also sets TFY-API-KEY from your shell TFY_API_KEY when the group is new.`);
     console.log(`  2. Install the Slack app at ${slackWorkspaceUrl}/apps using slack-app-manifest.json`);
-    console.log(`  3. Run: tfy-hermes-agent deploy hermes.yaml`);
+    console.log(`     then update SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET in the SecretGroup.`);
   } finally {
     rl.close();
   }
@@ -620,6 +753,10 @@ async function runInit() {
 async function runDeploy(file, flags) {
   const config = await readHermesConfig(file);
   process.env.TFY_HOST ||= controlPlaneUrl(config);
+
+  await ensureSecretGroup(config, file, {
+    skipLiveChecks: Boolean(flags["skip-live-checks"])
+  });
 
   await liveValidate(config, {
     allowUpdate: Boolean(flags.update),
@@ -669,7 +806,11 @@ export function isDirectInvocation(entryPath = process.argv[1]) {
   }
 }
 
-export { generateRunTokenSecret };
+export {
+  generateRunTokenSecret,
+  parseHermesSecretsLocalContent,
+  runTokenNeedsWrite
+};
 
 if (isDirectInvocation()) {
   main().catch((error) => {
