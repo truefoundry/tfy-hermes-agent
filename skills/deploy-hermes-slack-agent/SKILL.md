@@ -12,7 +12,7 @@ Keep the conversation moving one missing input or one manual task at a time.
 
 - Source of truth: `hermes.yaml`.
 - Generated output: TrueFoundry manifests built in memory and piped to `tfy apply`. Pass `--emit-manifests <dir>` only when the user wants the YAML files on disk for inspection.
-- Architecture: one Slack app per agent, plus four TrueFoundry resources — `secrets` (SecretGroup), `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job template). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
+- Architecture: one Slack app per agent, a `secrets` SecretGroup the user creates out-of-band, and three TrueFoundry resources `deploy` applies — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job template). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
 - Slack transport: HTTP Events API and Interactivity only. Do not use Socket Mode, WebSockets, slash commands, Slack user groups, or Slack OAuth.
 - Secrets: never ask the user to paste raw Slack tokens, signing secrets, TrueFoundry API keys, or the HMAC run-token secret into chat. Have them fill the TrueFoundry SecretGroup directly.
 - Deployment gate: `deploy` runs live validation as its first action. There is no separate `validate` command.
@@ -70,7 +70,7 @@ Resource references:
 - `model` is in the model list reachable from the key.
 
 Secrets:
-- The `secrets` SecretGroup exists in the workspace and contains all four required keys, or the key has permission to create the SecretGroup.
+- The `secrets` SecretGroup already exists in the workspace and contains all four required keys. `deploy` does not create the SecretGroup; if it is missing, validation fails with `SecretGroup not found: <name> (create it in TrueFoundry first)`.
 
 ## Input Rules
 
@@ -103,7 +103,7 @@ When stopping, give exactly one concrete task and the file/path/name the user ne
 
 The flow is complete only when:
 
-- `hermes.yaml` exists and `deploy` succeeds (live validation passed and `tfy apply` reported success for `secrets`, `volume`, `controller`, and `executor`).
+- `hermes.yaml` exists and `deploy` succeeds (live validation passed and `tfy apply` reported success for `volume`, `controller`, and `executor`).
 - Slack app is installed and backed by the per-agent SecretGroup with all four required keys filled.
 - `/api/health`, `/slack/health`, and `/v1/models` respond.
 - Session smoke tests pass (see `references/session-smoke-test.md`).
