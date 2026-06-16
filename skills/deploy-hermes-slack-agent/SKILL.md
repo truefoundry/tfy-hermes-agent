@@ -1,6 +1,6 @@
 ---
 name: deploy-hermes-slack-agent
-description: Onboards standalone TrueFoundry Hermes agents from hermes.yaml — Slack, API-only (`init --api-only`), or both. Use when a user wants to create, deploy, update, or smoke-test a Hermes agent with generated manifests, auto-provisioned SecretGroup, volume, controller, and executor.
+description: Onboards standalone TrueFoundry Hermes agents from agents/<name>/<name>.yaml — Slack, API-only (`init --api-only`), or both. Use when a user wants to create, deploy, update, or smoke-test a Hermes agent with compiled manifests in agents/<name>/deployments/, auto-provisioned SecretGroup, volume, controller, and executor.
 ---
 
 # Deploy Hermes Slack Agent
@@ -10,16 +10,31 @@ Keep the conversation moving one missing input or one manual task at a time.
 
 ## Core Contract
 
-- Source of truth: `agents/<name>/<name>.yaml`.
-- Generated output: compiled to `agents/<name>/deployments/`; `deploy` runs `tfy apply -f` on each file. Pass `--emit-manifests <dir>` to write elsewhere. SecretGroup is provisioned via API, not as a deployments file.
-- Architecture: Slack deployments use one Slack app per agent; API-only (`init --api-only`) skips Slack. Both paths use a `secrets` SecretGroup (`deploy` auto-creates if missing) and three TrueFoundry resources `deploy` applies — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job template). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
-- Slack transport: HTTP Events API and Interactivity only. Do not use Socket Mode, WebSockets, slash commands, Slack user groups, or Slack OAuth.
-- Secrets: never ask the user to paste raw Slack tokens, signing secrets, TrueFoundry API keys, or the HERMES run-token secret into chat. `deploy` sets `HERMES-RUN-TOKEN-SECRET` and `TFY-API-KEY` automatically. For Slack, the user pastes bot token + signing secret into the SecretGroup UI after deploy — the only manual secret step.
-- Deployment gate: `deploy` calls `ensureSecretGroup` then runs live validation unless `--skip-live-checks` is passed. There is no separate `validate` command.
+- **Source of truth:** `agents/<name>/<name>.yaml` (created by `init` or copied from `agents/devrel-assistant/devrel-assistant.yaml` in the package).
+- **Distribution:** GitHub only — not on the npm registry. Install with `npm install github:truefoundry/tfy-hermes-agent`.
+- **Two CLIs required:** **tfy** (`pip install -U "truefoundry"`) applies manifests; **tfy-hermes-agent** compiles them and orchestrates `tfy apply -f`.
+- **On-disk layout** (per agent):
+
+  ```text
+  agents/<name>/
+  ├── <name>.yaml                 # edit this — source config
+  ├── slack-app-manifest.json     # Slack setup only (skipped with init --api-only)
+  ├── .hermes-secrets.local       # gitignored HERMES-RUN-TOKEN-SECRET seed
+  └── deployments/                # compiled TF manifests (written by deploy)
+      ├── <name>-volume.yaml
+      ├── <name>-controller.yaml
+      └── <name>-executor.yaml
+  ```
+
+- **Generated output:** `deploy` compiles to `agents/<name>/deployments/` and runs `tfy apply -f` on each file in order (volume → controller → executor). Pass `--emit-manifests <dir>` to write elsewhere. **SecretGroup is provisioned via API, not as a deployments file.**
+- **Architecture:** Slack deployments use one Slack app per agent; API-only (`init --api-only`) skips Slack. Both paths use a `secrets` SecretGroup (`deploy` auto-creates if missing) and three TrueFoundry resources — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job template). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
+- **Slack transport:** HTTP Events API and Interactivity only. Do not use Socket Mode, WebSockets, slash commands, Slack user groups, or Slack OAuth.
+- **Secrets:** never ask the user to paste raw Slack tokens, signing secrets, TrueFoundry API keys, or the HERMES run-token secret into chat. `deploy` sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` automatically. For Slack, the user pastes bot token + signing secret into the SecretGroup UI after deploy — the only manual secret step.
+- **Deployment gate:** `deploy` calls `ensureSecretGroup` (API) then runs live validation unless `--skip-live-checks` is passed. There is no separate `validate` command.
 
 ## Load References
 
-- Read `references/deployment-example.md` when creating or reviewing `hermes.yaml`, generated manifests, Slack app setup, deploy (including auto-provisioned secrets), or failure handling.
+- Read `references/deployment-example.md` when creating or reviewing agent config, compiled manifests in `deployments/`, Slack app setup, deploy (including auto-provisioned secrets), or failure handling.
 - Read `references/session-smoke-test.md` before declaring a deployment healthy or when debugging runtime behavior.
 
 ## Workflow
@@ -63,9 +78,9 @@ Creates `agents/<name>/` with `<name>.yaml`, `slack-app-manifest.json` (unless `
 
 **Init wizard prompts**
 
-Required: `name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` (SecretGroup name only — `deploy` creates it).
+Required: `name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` (SecretGroup name only — `deploy` creates it via API).
 
-Then optional (Enter to skip each; omitted from `hermes.yaml` when blank):
+Then optional (Enter to skip each; omitted from the yaml when blank):
 
 | Field | Wizard prompt |
 |---|---|
@@ -78,9 +93,9 @@ Then optional (Enter to skip each; omitted from `hermes.yaml` when blank):
 | `slack.allowed_channels` | Comma-separated channel IDs — skipped with `--api-only` |
 | `slack.allowed_users` | Comma-separated user IDs — skipped with `--api-only` |
 
-Or copy `agents/devrel-assistant/devrel-assistant.yaml` from the package and edit in place.
+Or copy `agents/devrel-assistant/devrel-assistant.yaml` from the package into a new `agents/<name>/` folder and edit in place.
 
-If it already exists, collect any missing fields and edit in place. See **Input Rules** below and `references/deployment-example.md`.
+If it already exists, collect any missing fields and edit `agents/<name>/<name>.yaml` in place. See **Input Rules** below and `references/deployment-example.md`.
 
 ### Step 2 — Slack app (skip if API-only)
 
@@ -94,17 +109,23 @@ Stop for manual Slack work before deploy:
 
 ### Step 3 — Deploy
 
-No separate SecretGroup step. `deploy` auto-creates the group and sets `HERMES-RUN-TOKEN-SECRET` (from `.hermes-secrets.local`) and `TFY-API-KEY` (from `credentials.json` or env). For Slack, the only manual secret work is pasting tokens from step 2 into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` after deploy runs.
+No separate SecretGroup step. `deploy` auto-creates the group via API and sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` (from `credentials.json` or env). For Slack, the only manual secret work is pasting tokens from step 2 into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` after deploy runs.
 
 Stop only if secret-store integration discovery fails (then create the SecretGroup manually in the UI).
 
-Preview manifests offline (optional):
+Preview manifests offline (compile only — no API secret provisioning, no apply):
 
 ```bash
 tfy-hermes-agent deploy <name> --skip-live-checks
 ```
 
-Compiles to `agents/<name>/deployments/`: `<name>-volume.yaml`, `<name>-controller.yaml`, `<name>-executor.yaml`.
+Compiles to `agents/<name>/deployments/`:
+
+| File | Resource |
+|---|---|
+| `<name>-volume.yaml` | Volume (10Gi RWO, /data on controller) |
+| `<name>-controller.yaml` | Service (Slack + `/v1/*`) |
+| `<name>-executor.yaml` | Job template (hermes per turn) |
 
 Apply to TrueFoundry (`ensureSecretGroup` via API first, then live validation, then `tfy apply -f` from `deployments/` in order: volume → controller → executor):
 
@@ -116,11 +137,19 @@ tfy-hermes-agent deploy <name>
 Reads `~/.truefoundry/credentials.json` from `tfy login` when `TFY_HOST` / `TFY_API_KEY` are unset.
 
 Flags:
-- `--update` — overwrite existing deployment
-- `--emit-manifests <dir>` — write compiled yaml to a custom directory instead of `deployments/`
+
+- `--update` — overwrite an existing deployment of the same name in the workspace
+- `--emit-manifests <dir>` — write compiled yaml to a custom directory instead of `agents/<name>/deployments/`
 - `--skip-live-checks` — compile only; does not apply or provision secrets
 
-After a git-source image change, rebuild with `tfy deploy --force -f <manifest>` (not plain `tfy apply`).
+After a git-source image change, rebuild with:
+
+```bash
+tfy deploy --force -f agents/<name>/deployments/<name>-controller.yaml
+tfy deploy --force -f agents/<name>/deployments/<name>-executor.yaml
+```
+
+(not plain `tfy apply`).
 
 ### Step 4 — Post-deploy Slack URLs (skip if API-only)
 
@@ -153,14 +182,17 @@ Then run backend session smoke tests (`references/session-smoke-test.md`). For S
 `deploy` always runs live unless `--skip-live-checks` is passed. Credentials come from `TFY_HOST` + `TFY_API_KEY` (env) or `~/.truefoundry/credentials.json` (`host`, `access_token`). Every check must pass before manifests apply.
 
 Auth & access:
+
 - Credentials authenticate against the target host.
 - `workspace_fqn` exists and the key has access to it.
 
 Naming & routing:
+
 - `name` does not clash with an existing deployment in the workspace. A match on the current agent's own deployment is an update, allowed only with `--update`.
 - `host` (if specified) is not already routed to another deployment.
 
 Resource references:
+
 - Every `skills` FQN exists in the agent-skill registry and is fetchable with the key.
 - Every `skills` FQN is version-pinned (e.g. `:1`); floating tags are rejected.
 - Every `mcp_servers` URL is a TrueFoundry MCP Gateway URL.
@@ -168,17 +200,18 @@ Resource references:
 - `model` is in the model list reachable from the key.
 
 Secrets:
-- `ensureSecretGroup` runs inside `deploy` — creates the SecretGroup when missing, sets `HERMES-RUN-TOKEN-SECRET` and `TFY-API-KEY` automatically. All four keys must exist before manifests apply (Slack keys start as placeholders; user pastes real tokens after deploy if Slack is in scope).
+
+- `ensureSecretGroup` runs inside `deploy` via API — creates the SecretGroup when missing, sets `HERMES-RUN-TOKEN-SECRET` and `TFY-API-KEY` automatically. All four keys must exist before manifests apply (Slack keys start as placeholders; user pastes real tokens after deploy if Slack is in scope).
 
 ## Input Rules
 
 | Field | Required | Notes |
 |---|---|---|
-| `name` | yes | Lowercase Slack-safe handle, 2–32 chars, e.g. `devrel-assistant`. |
+| `name` | yes | Lowercase Slack-safe handle, 2–32 chars, e.g. `devrel-assistant`. Becomes the `agents/<name>/` folder name. |
 | `workspace_fqn` | yes | `cluster:workspace`, e.g. `tfy-ea-dev-eo-az:sai-ws`. |
 | `gateway_url` | yes | OpenAI-compatible gateway URL for Hermes model calls. |
 | `model` | yes | Gateway model id, e.g. `openai-main/gpt-5.5`. |
-| `secrets` | yes | SecretGroup name (default `<name>-hermes-secrets`); `deploy` creates and populates `TFY-API-KEY` + `HERMES-RUN-TOKEN-SECRET`. Init only asks for the name. |
+| `secrets` | yes | SecretGroup name (default `<name>-hermes-secrets`); `deploy` creates and populates `TFY-API-KEY` + `HERMES-RUN-TOKEN-SECRET` via API. Init only asks for the name. |
 | `version` | no | Git ref for controller/executor image build. Default `main`. Slashed branches fail on TF's git puller — use commit SHA. |
 | `host` | no | Public controller URL; inferred from `TFY_HOST` + `name` + workspace if omitted. |
 | `description` | no | Short agent description. |
@@ -208,19 +241,19 @@ Only stop for external work:
 - Installing/authenticating `tfy` (`tfy login`) or `tfy-hermes-agent`
 - Production Virtual Account PAT setup (`tfy login --api-key …`) when the user's personal token lacks `application:read` + `application:trigger`
 - Manual SecretGroup creation only when `deploy` cannot discover a secret-store integration
-- Slack app at https://api.slack.com/apps (skip if API-only) — before deploy
+- Slack app at https://api.slack.com/apps (skip if API-only) — before deploy; manifest at `agents/<name>/slack-app-manifest.json`
 - Slack token entry in SecretGroup UI after deploy (never in chat; only manual secret step)
 - Slack URL verification in Slack settings (skip if API-only)
 - First real Slack message result (skip if API-only)
 
-When stopping, give exactly one concrete task and the file/path/name the user needs.
+When stopping, give exactly one concrete task and the file/path/name the user needs (e.g. `agents/devrel-assistant/slack-app-manifest.json`, not a generic filename).
 
 ## Completion Criteria
 
 The flow is complete only when:
 
 - Both CLIs installed; TrueFoundry credentials available via `tfy login` or env vars
-- `hermes.yaml` exists and `deploy` succeeds (auto secrets + live validation + `tfy apply` for volume, controller, executor)
+- `agents/<name>/<name>.yaml` exists and `deploy` succeeds (API secrets + live validation + `tfy apply -f` on volume, controller, executor in `deployments/`)
 - `TFY-API-KEY` and `HERMES-RUN-TOKEN-SECRET` set by `deploy` (no manual step)
 - Slack tokens pasted into SecretGroup after deploy (if Slack is in scope)
 - `/api/health` and `/v1/models` respond
