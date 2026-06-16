@@ -70,6 +70,14 @@ pip install -U "truefoundry"
 tfy login --host https://<your-tenant>.truefoundry.cloud
 ```
 
+`deploy` reads `~/.truefoundry/credentials.json` from `tfy login` automatically. Env vars `TFY_HOST` / `TFY_API_KEY` override the file.
+
+For production agents, prefer a **Virtual Account PAT** with `application:read` + `application:trigger` (a write-only PAT silently breaks job dispatch):
+
+```bash
+tfy login --host https://<your-tenant>.truefoundry.cloud --api-key <virtual-account-pat>
+```
+
 **Hermes deploy CLI** (generates manifests and calls `tfy apply`):
 
 ```bash
@@ -83,67 +91,43 @@ If tfy-hermes-agent is installed locally, use `npx tfy-hermes-agent` or:
 node node_modules/@truefoundry/tfy-hermes-agent/bin/tfy-hermes-agent.mjs
 ```
 
-### 2. Get a TrueFoundry API key
-
-In your tenant's TrueFoundry UI:
-
-1. Open **Settings → Access Tokens** (or create a **Virtual Account** for the agent).
-2. Create a PAT scoped to the target workspace with at least:
-   - `application:read` — controller looks up the executor deployment
-   - `application:trigger` — controller dispatches executor jobs
-3. Copy the token. This becomes `TFY-API-KEY` in the SecretGroup (step 4) and is also used as `TFY_API_KEY` in your shell for `deploy`.
-
-A write-only PAT will silently break job dispatch.
-
-### 3. Write `hermes.yaml`
+### 2. Write `hermes.yaml`
 
 Either run the wizard:
 
 ```bash
 tfy-hermes-agent init
+# API-only (no Slack): tfy-hermes-agent init --api-only
 ```
 
 This writes `hermes.yaml`, `slack-app-manifest.json`, and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
 
+The wizard asks required fields first, then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from `hermes.yaml`. The `secrets` field is only a name — `deploy` creates the SecretGroup.
+
 Or copy `examples/agent.hermes.yaml` and edit it. See [hermes.yaml fields](#hermesyaml-fields) below.
 
-### 4. SecretGroup
-
-`deploy` **creates the SecretGroup if it doesn't exist** and **sets `HERMES-RUN-TOKEN-SECRET` automatically** (from `.hermes-secrets.local` beside `hermes.yaml`, or generates one on the fly).
-
-On first create it also sets `TFY-API-KEY` from your shell `TFY_API_KEY`. Slack keys get placeholders until you fill them after installing the Slack app.
-
-You only need to create the SecretGroup manually if `deploy` can't find a secret-store integration in your tenant.
-
-Fill or update these four keys. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
-
-| Key | What to put there |
-|---|---|
-| `TFY-API-KEY` | The PAT from step 2. Set automatically on first `deploy` from `TFY_API_KEY`. |
-| `HERMES-RUN-TOKEN-SECRET` | **Set automatically by `deploy`.** Master secret for per-run HMAC tokens between controller and executor. Not a Slack token. |
-| `SLACK-BOT-TOKEN` | `xoxb-…` from your Slack app (step 5). Placeholder until Slack is wired. |
-| `SLACK-SIGNING-SECRET` | Signing secret from your Slack app (step 5). Placeholder until Slack is wired. |
-
-Never commit these values. They live only in the SecretGroup.
-
-### 5. Slack app (skip if API-only)
+### 3. Slack app (skip if API-only)
 
 Only needed if you want Slack. Socket Mode is not supported.
 
 1. `init` already wrote `slack-app-manifest.json`. If you wrote `hermes.yaml` by hand, run `init` once or copy the manifest from a prior run.
-2. In [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → paste `slack-app-manifest.json`.
+2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → paste `slack-app-manifest.json`.
 3. **Install App** to your workspace.
-4. Copy from the Slack app settings:
+4. Copy from the Slack app settings (paste into the SecretGroup after deploy in step 4):
    - **OAuth & Permissions** → **Bot User OAuth Token** → `SLACK-BOT-TOKEN`
    - **Basic Information** → **App Credentials** → **Signing Secret** → `SLACK-SIGNING-SECRET`
-5. Paste both into the SecretGroup from step 4.
-6. Deploy first (step 6), then confirm Slack **Event Subscriptions** and **Interactivity** URLs match your controller host:
-   - `https://<host>/slack/events`
-   - `https://<host>/slack/interactions`
 
-Invite the bot to channels where it should respond.
+### 4. Deploy
 
-### 6. Generate and apply TrueFoundry manifests
+`deploy` is the only command that touches TrueFoundry. It auto-provisions secrets you do **not** need to set manually:
+
+- Creates the SecretGroup named in `hermes.yaml` `secrets` (if missing)
+- Sets `HERMES-RUN-TOKEN-SECRET` from `.hermes-secrets.local` (or generates one)
+- Sets `TFY-API-KEY` from `~/.truefoundry/credentials.json` or shell `TFY_API_KEY`
+
+For Slack, the **only** manual secret step is pasting `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
+
+Manual SecretGroup creation is only needed if `deploy` cannot discover a secret-store integration in your tenant.
 
 Preview manifests without applying:
 
@@ -179,7 +163,14 @@ Flags:
 
 After a git-source image change, rebuild with `tfy deploy --force -f <manifest>` (not plain `tfy apply`).
 
-### 7. Verify
+For Slack deployments, after deploy confirm **Event Subscriptions** and **Interactivity** URLs match your controller host:
+
+- `https://<host>/slack/events`
+- `https://<host>/slack/interactions`
+
+Invite the bot to channels where it should respond.
+
+### 5. Verify
 
 ```bash
 curl -fsS https://<host>/api/health
@@ -223,16 +214,16 @@ mcp_servers:
 | `workspace_fqn` | yes | `cluster:workspace`, e.g. `tfy-ea-dev-eo-az:sai-ws`. |
 | `gateway_url` | yes | OpenAI-compatible LLM gateway URL (TrueFoundry AI Gateway `/v1` endpoint). |
 | `model` | yes | Model id your gateway accepts, e.g. `openai-main/gpt-5.5`. |
-| `secrets` | yes | Name of an existing SecretGroup with the four keys above. |
-| `version` | no | Git ref to build controller/executor images from (`main`, tag, or commit SHA). Default `main`. Slashed branch names fail on TF's git puller — use a commit SHA instead. |
-| `host` | no | Public controller URL. Derived from `TFY_HOST` + `name` + workspace if omitted. |
-| `description` | no | Short agent description (Slack assistant view). |
-| `instructions` | no | System prompt appended on each executor turn. |
-| `slack.allowed_channels` | no | Slack channel/group/DM IDs. Empty or omitted = all channels the bot is in. |
-| `slack.allowed_users` | no | Slack user IDs. Empty or omitted = all users. |
-| `slack_team_id` | no | Slack team id if you need to pin a workspace. |
-| `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. |
-| `mcp_servers` | no | TrueFoundry MCP Gateway URLs. |
+| `secrets` | yes | SecretGroup name (default `<name>-hermes-secrets`); `deploy` creates and populates `TFY-API-KEY` + `HERMES-RUN-TOKEN-SECRET`. |
+| `version` | no | Git ref to build controller/executor images from (`main`, tag, or commit SHA). Default `main`. Slashed branch names fail on TF's git puller — use a commit SHA instead. `init` prompts; omitted from yaml if left as default. |
+| `host` | no | Public controller URL. Derived from `TFY_HOST` + `name` + workspace if omitted. `init` prompts. |
+| `description` | no | Short agent description (Slack assistant view). `init` prompts (can be blank). |
+| `instructions` | no | System prompt appended on each executor turn. `init` prompts (multiline). |
+| `slack.allowed_channels` | no | Slack channel/group/DM IDs. Empty or omitted = all channels the bot is in. `init` prompts. |
+| `slack.allowed_users` | no | Slack user IDs. Empty or omitted = all users. `init` prompts. |
+| `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
+| `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
+| `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
 
 ---
 

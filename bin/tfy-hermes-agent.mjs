@@ -34,17 +34,17 @@ const SECRET_PLACEHOLDER_VALUES = new Set([
   "replace-in-truefoundry-only",
   SECRET_PLACEHOLDER_SLACK,
   SECRET_PLACEHOLDER_TFY,
-  "pending",
-  "pending-slack-setup"
+  "pending"
 ]);
 
 const USAGE = [
   "Usage:",
-  "  tfy-hermes-agent init",
+  "  tfy-hermes-agent init [--api-only]",
   "  tfy-hermes-agent deploy <hermes.yaml> [--update] [--emit-manifests <dir>] [--skip-live-checks]",
   "",
-  "init walks you through Slack + TrueFoundry settings and writes hermes.yaml.",
-  "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
+  "init walks you through hermes.yaml settings (required + optional fields) and writes .hermes-secrets.local.",
+  "init --api-only skips Slack file output and Slack optional prompts.",
+  "deploy auto-creates the SecretGroup and sets HERMES-RUN-TOKEN-SECRET + TFY-API-KEY from credentials.json.",
   "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
   "deploy reads ~/.truefoundry/credentials.json after tfy login when TFY_HOST/TFY_API_KEY are unset."
 ].join("\n");
@@ -64,8 +64,12 @@ function parseArgs(argv) {
     return { command: "help", file: null, flags: {} };
   }
   if (command === "init") {
-    if (rest.length) throw new Error("init takes no arguments");
-    return { command, file: null, flags: {} };
+    const flags = {};
+    for (const item of rest) {
+      if (item === "--api-only") flags["api-only"] = true;
+      else throw new Error(`unknown init argument: ${item}\n\n${USAGE}`);
+    }
+    return { command, file: null, flags };
   }
   if (command !== "deploy") throw new Error(`unknown command: ${command}\n\n${USAGE}`);
 
@@ -476,7 +480,11 @@ async function checkWorkspace(config) {
 async function checkSecretGroup(config) {
   const groups = rowsOf(await tfyFetch("/api/svc/v1/secret-groups"));
   const group = groups.find((row) => row.name === config.secrets || row.manifest?.name === config.secrets);
-  if (!group) throw new Error(`SecretGroup not found: ${config.secrets} (create it in TrueFoundry first)`);
+  if (!group) {
+    throw new Error(
+      `SecretGroup not found: ${config.secrets} (deploy could not create it — check secret-store integration access)`
+    );
+  }
   const groupId = group.id || group.fqn || group.name;
   const secrets = await tfyFetch("/api/svc/v1/secrets", {
     method: "POST",
@@ -717,13 +725,33 @@ async function promptList(rl, label, { validate } = {}) {
   return items;
 }
 
-async function runInit() {
+async function promptMultiline(rl, label) {
+  console.log(`${label} (blank line to finish, or Enter alone to skip):`);
+  const lines = [];
+  while (true) {
+    const line = await rl.question("> ");
+    if (!line.trim()) {
+      if (!lines.length) return "";
+      break;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n").trim();
+}
+
+const SLACK_APPS_URL = "https://api.slack.com/apps";
+
+async function runInit(flags = {}) {
+  const apiOnly = Boolean(flags["api-only"]);
   await resolveTfyCredentials({ required: false });
   const rl = readline.createInterface({ input, output, terminal: true });
   try {
-    console.log("This wizard writes hermes.yaml and slack-app-manifest.json in the current directory.\n");
+    console.log(
+      apiOnly
+        ? "This wizard writes hermes.yaml and .hermes-secrets.local in the current directory.\n"
+        : "This wizard writes hermes.yaml, slack-app-manifest.json, and .hermes-secrets.local in the current directory.\n"
+    );
     const handle = await prompt(rl, "Agent handle (2-32 chars, lowercase, hyphens)", { required: true, validate: slugifyName });
-    const agentName = await prompt(rl, "Agent display name", { def: titleFromName(handle) });
     const description = await prompt(rl, "Agent description");
     const model = await prompt(rl, "Model", { def: DEFAULT_MODEL });
     const workspaceFqn = await prompt(rl, "Workspace FQN (cluster:workspace)", {
@@ -734,14 +762,6 @@ async function runInit() {
       }
     });
     const gatewayUrl = await prompt(rl, "OpenAI-compatible gateway URL", { required: true, validate: normalizeGatewayUrl });
-    const slackWorkspaceUrl = await prompt(rl, "Slack workspace URL (e.g. https://your-team.slack.com)", {
-      required: true,
-      validate: (value) => {
-        const url = new URL(value.startsWith("http") ? value : `https://${value}`);
-        if (!url.hostname.endsWith("slack.com")) throw new Error("must be a slack.com URL");
-        return url.origin;
-      }
-    });
     const secretsName = await prompt(rl, "SecretGroup name", {
       def: `${handle}-hermes-secrets`,
       validate: (value) => {
@@ -749,31 +769,58 @@ async function runInit() {
         return value;
       }
     });
+
+    console.log("\nOptional fields (press Enter to skip each):\n");
+    const version = await prompt(rl, "Git ref for controller/executor image build", { def: DEFAULT_SOURCE_REF });
+    const host = await prompt(rl, "Public controller host URL");
+    const instructions = await promptMultiline(rl, "System instructions (appended each executor turn)");
     const skills = await promptList(rl, "Skill FQNs", {
       validate: (value) => { if (!validateSkillFqn(value)) throw new Error(`invalid skill FQN: ${value}`); }
     });
     const mcpServers = await promptList(rl, "MCP server URLs", { validate: normalizeMcpUrl });
+    let slackTeamId = "";
+    let allowedChannels = [];
+    let allowedUsers = [];
+    if (!apiOnly) {
+      slackTeamId = await prompt(rl, "Slack team id (T…)");
+      allowedChannels = await promptList(rl, "Slack allowed channel IDs (C…)");
+      allowedUsers = await promptList(rl, "Slack allowed user IDs (U…)");
+    }
 
     const runTokenSecret = generateRunTokenSecret();
     const secretsLocalPath = path.resolve(process.cwd(), ".hermes-secrets.local");
 
-    const yamlPath = path.resolve(process.cwd(), "hermes.yaml");
-    await writeFile(yamlPath, YAML.stringify({
+    const hermesDoc = {
       name: handle,
-      display_name: agentName,
       workspace_fqn: workspaceFqn,
       description,
       model,
       gateway_url: gatewayUrl,
-      slack_workspace_url: slackWorkspaceUrl,
-      secrets: secretsName,
-      skills,
-      mcp_servers: mcpServers
-    }, { lineWidth: 0 }));
+      secrets: secretsName
+    };
+    if (version && version !== DEFAULT_SOURCE_REF) hermesDoc.version = version;
+    if (host) hermesDoc.host = host;
+    if (instructions) hermesDoc.instructions = instructions;
+    if (!apiOnly) {
+      if (slackTeamId) hermesDoc.slack_team_id = slackTeamId;
+      if (allowedChannels.length || allowedUsers.length) {
+        hermesDoc.slack = {};
+        if (allowedChannels.length) hermesDoc.slack.allowed_channels = allowedChannels;
+        if (allowedUsers.length) hermesDoc.slack.allowed_users = allowedUsers;
+      }
+    }
+    if (skills.length) hermesDoc.skills = skills;
+    if (mcpServers.length) hermesDoc.mcp_servers = mcpServers;
 
-    const slackPath = path.resolve(process.cwd(), "slack-app-manifest.json");
-    const stubManifest = slackManifest({ name: handle, host: resolveHost(null, handle, workspaceFqn), description });
-    await writeFile(slackPath, `${JSON.stringify(stubManifest, null, 2)}\n`);
+    const yamlPath = path.resolve(process.cwd(), "hermes.yaml");
+    await writeFile(yamlPath, YAML.stringify(hermesDoc, { lineWidth: 0 }));
+
+    if (!apiOnly) {
+      const slackPath = path.resolve(process.cwd(), "slack-app-manifest.json");
+      const stubManifest = slackManifest({ name: handle, host: resolveHost(null, handle, workspaceFqn), description });
+      await writeFile(slackPath, `${JSON.stringify(stubManifest, null, 2)}\n`);
+      console.log(`wrote ${slackPath}`);
+    }
 
     await writeFile(
       secretsLocalPath,
@@ -786,17 +833,26 @@ async function runInit() {
     );
 
     console.log(`\nwrote ${yamlPath}`);
-    console.log(`wrote ${slackPath}`);
     console.log(`wrote ${secretsLocalPath} (gitignored)\n`);
     console.log("Generated HERMES-RUN-TOKEN-SECRET for this agent (executor callback HMAC):");
     console.log(`  ${runTokenSecret}`);
     console.log("If updating an existing deployment, keep the SecretGroup value you already use.\n");
     console.log("Next steps:");
-    console.log(`  1. Run: tfy-hermes-agent deploy hermes.yaml`);
-    console.log(`     deploy creates the SecretGroup if needed and sets HERMES-RUN-TOKEN-SECRET automatically.`);
-    console.log(`     It also sets TFY-API-KEY from your shell TFY_API_KEY when the group is new.`);
-    console.log(`  2. Install the Slack app at ${slackWorkspaceUrl}/apps using slack-app-manifest.json`);
-    console.log(`     then update SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET in the SecretGroup.`);
+    if (apiOnly) {
+      console.log("  1. Run: tfy-hermes-agent deploy hermes.yaml");
+      console.log("     No manual secret steps — deploy creates the SecretGroup and sets");
+      console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY from credentials.json automatically.");
+      console.log("  2. Call /v1/chat/completions on the controller host to verify.");
+    } else {
+      console.log(`  1. Install the Slack app at ${SLACK_APPS_URL}`);
+      console.log("     Create New App → From an app manifest → paste slack-app-manifest.json → Install App.");
+      console.log("     Copy SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET from the app settings.");
+      console.log("  2. Run: tfy-hermes-agent deploy hermes.yaml");
+      console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY are set automatically — no manual step.");
+      console.log("     Then paste your Slack tokens into SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET");
+      console.log("     in the SecretGroup (the only secrets you enter by hand).");
+      console.log("  3. Confirm Slack Event Subscriptions and Interactivity URLs match your controller host.");
+    }
   } finally {
     rl.close();
   }
@@ -841,7 +897,7 @@ async function runDeploy(file, flags) {
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed.command === "help") { console.log(USAGE); return; }
-  if (parsed.command === "init") { await runInit(); return; }
+  if (parsed.command === "init") { await runInit(parsed.flags); return; }
   if (parsed.command === "deploy") { await runDeploy(parsed.file, parsed.flags); return; }
   throw new Error(`unknown command: ${parsed.command}\n\n${USAGE}`);
 }

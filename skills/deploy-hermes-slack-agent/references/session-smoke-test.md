@@ -4,19 +4,24 @@ Use this before telling the user a deployed agent is healthy.
 
 ## Health
 
-Check:
+Check all deployments:
 
 ```text
 GET https://<host>/api/health
-GET https://<host>/slack/health
 GET https://<host>/v1/models
+```
+
+For Slack deployments (skip if API-only):
+
+```text
+GET https://<host>/slack/health
 ```
 
 Use the `TFY-API-KEY` from the agent's SecretGroup as the `/v1/*`
 bearer token. The controller is fail-closed: it refuses to start without
 both `TFY_API_KEY` and `HERMES_RUN_TOKEN_SECRET` set.
 
-Expected Slack health:
+Expected Slack health (when Slack is in scope):
 
 - `botTokenConfigured: true`
 - `signingSecretConfigured: true`
@@ -67,6 +72,8 @@ For MCP-backed agents, include one prompt that forces a real MCP tool call and
 confirm `tool_start` and `tool_complete` events appear.
 
 ## Slack Handoff Test
+
+Skip if the deployment is API-only (`init --api-only`).
 
 Ask the user to mention the agent in a real channel:
 

@@ -8,7 +8,7 @@ A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://gith
 
 - `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run executor callbacks. Owns the only persistent state (SQLite on a controller-only PVC).
 - `executor/executor.mjs` — per-turn TrueFoundry Job. Decodes a signed payload, downloads the session DB, runs `hermes -z`, uploads the updated DB, posts results back.
-- `bin/tfy-hermes-agent.mjs` — CLI. Two commands: `init` (interactive wizard) and `deploy` (validate + apply manifests).
+- `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard with optional fields, `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
 
 ## Don't do these things
@@ -32,12 +32,14 @@ Three credentials, each scoped:
 
 `TFY-API-KEY` is reused for three things — control-plane writes (job dispatch, skill fetch), the LLM gateway bearer, and inbound `/v1/*`. The token needs **read** permission on the workspace's apps too — a write-only Virtual Account PAT will silently fail at `triggerJob` because the controller can't look up the executor's deployment ID.
 
+CLI auth: `deploy` reads `~/.truefoundry/credentials.json` from `tfy login` (`host`, `access_token`). Env vars override. Production: `tfy login --host <url> --api-key <virtual-account-pat>`.
+
 ## Common tasks
 
-- **Run tests:** `npm run check` (24 tests, syntax checks, ~500ms).
+- **Run tests:** `npm run check` (29 tests, syntax checks, ~500ms).
 - **Build images locally:** `docker build -f Dockerfile.controller -t hermes-controller:local .` and `docker build -f Dockerfile.executor -t hermes-executor:local .`. Both build clean on Apple Silicon and linux/amd64; if a remote build fails and a local build passes, the platform's build farm is the suspect (start by trying the commit SHA in `version:` instead of a branch name with slashes — TF's git puller has issues with branch names containing `/`).
 - **Smoke-test the controller:** boot with `docker run -e TFY_API_KEY=x -e HERMES_RUN_TOKEN_SECRET=y -e HERMES_SKIP_EXECUTOR_DISPATCH=1 -p 8787:8787 hermes-controller:local` and curl `/api/health`.
-- **Emit manifests without applying:** `TFY_HOST=https://tfy-eo.truefoundry.cloud node bin/tfy-hermes-agent.mjs deploy examples/agent.hermes.yaml --skip-live-checks --emit-manifests /tmp/out`.
+- **Emit manifests without applying:** `tfy-hermes-agent deploy examples/agent.hermes.yaml --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
 - **Force a controller restart without a rebuild** (to pick up new SecretGroup values): re-`tfy apply -f <controller-manifest>` with the same file. Rolling restart, ~30s, no build.
 
 ## Lessons learned the hard way (so far)
@@ -47,12 +49,12 @@ These all happened during the first manual rollout (Jun 14–15 2026). Search th
 1. **TF's git puller doesn't accept slashes in branch refs** for `image.build_source.branch_name`. Use a commit SHA in `hermes.yaml`'s `version:` field if your branch is `docs/skills-install-command`-style. Branches like `main`, `staging`, `dev` work fine.
 2. **`workspace_fqn` query param is silently ignored** by `/api/svc/v1/apps`. Always use `workspaceFqn` (camelCase). Same applies to most filter params — they're camelCase server-side.
 3. **`tfy apply` only triggers a rebuild for `image.type: image`** (pre-built). For `image.type: build` (git source) you must use `tfy deploy --force`. `tfy apply` will accept the manifest and silently never build.
-4. **A SecretGroup needs `integration_fqn` and `collaborators`** at create time. The CLI emits a scaffold with these populated for the tenant's default Azure Vault — adjust if your tenant uses a different secret store.
+4. **`deploy` auto-creates SecretGroups** via `/api/svc/v1/secret-groups` using the tenant's default secret-store `integrationId`. Fails if no integration is discoverable — then create manually in the UI.
 5. **`/v1/*` clients can't use a write-only PAT.** The controller calls `tfyGet('/api/svc/v1/apps?...')` to find the executor's deployment ID; this requires `read` on the workspace's apps. A Virtual Account scoped to `application:read` + `application:trigger` works.
 
 ## Branch / PR conventions
 
-- Branch off `main`, push to `docs/<topic>` or `feat/<topic>` etc.
+- Branch off `main` for larger changes (`docs/<topic>`, `feat/<topic>`).
 - Run `npm run check` before pushing.
 - PR title under 70 chars; details in body. Co-author with Claude when assisted.
-- Don't push directly to `main`.
+- Small fixes may land directly on `main`.
