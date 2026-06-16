@@ -71,20 +71,22 @@ mcp_servers:
 
 ## SecretGroup Scaffold
 
-`deploy` creates the SecretGroup with placeholders on first run (or `--update`).
-Fill these four keys in the TrueFoundry UI before the controller will start:
+`deploy` does NOT create the SecretGroup — it validates one exists with all
+four keys and fails with `SecretGroup not found: <name> (create it in
+TrueFoundry first)` otherwise. Create the SecretGroup in the TrueFoundry UI
+under the workspace named in `secrets:`, then fill these four keys before
+running `deploy`:
 
-```yaml
-name: devrel-assistant-hermes-secrets
-type: secret-group
-integration_fqn: tfy-eo:azure:tfy-ea-dev-eo-az:secret-store:vault
-workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-secrets:
-  TFY-API-KEY: "replace-in-truefoundry-only"
-  HERMES-RUN-TOKEN-SECRET: "replace-with-32-plus-random-chars"
-  SLACK-BOT-TOKEN: "xoxb-replace-in-truefoundry-only"
-  SLACK-SIGNING-SECRET: "replace-in-truefoundry-only"
-```
+| Key | Notes |
+|---|---|
+| `TFY-API-KEY` | Virtual Account PAT with `application:read` + `application:trigger` |
+| `HERMES-RUN-TOKEN-SECRET` | 32+ random characters |
+| `SLACK-BOT-TOKEN` | `xoxb-…` from the installed Slack app |
+| `SLACK-SIGNING-SECRET` | from the installed Slack app |
+
+Passing `--update` to `deploy` emits an additional scaffold manifest
+(`<name>-secrets.scaffold.yaml`) and runs `tfy apply` against it — only
+useful for refreshing the SecretGroup's metadata after it already exists.
 
 What each one does:
 
@@ -124,14 +126,16 @@ Flags:
 - `--emit-manifests <dir>` — also write the generated YAML files to `<dir>` for inspection. Without this flag, manifests are piped directly to `tfy apply` from memory.
 - `--skip-live-checks` — bypass control-plane validation; only use while iterating offline.
 
-`deploy` applies four resources in this order:
+`deploy` applies three resources in this order:
 
 ```text
-<name>-secrets.scaffold.yaml   (only when SecretGroup is missing or --update is passed)
 <name>-volume.yaml             (RWO PVC, 10Gi default, mounted at /data on the controller)
 <name>-controller.yaml         (Service, replicas: 1, mounts the volume)
 <name>-executor.yaml           (Job template, no volume mount, runs hermes -z per turn)
 ```
+
+Passing `--update` prepends `<name>-secrets.scaffold.yaml` to refresh the
+SecretGroup's metadata; the default flow leaves the SecretGroup untouched.
 
 State durability lives on the controller's RWO `/data` volume. There is no
 deployed snapshot job; if offsite backup is required, run an out-of-band
