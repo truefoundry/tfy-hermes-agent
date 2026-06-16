@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline/promises";
@@ -45,8 +45,18 @@ const USAGE = [
   "",
   "init walks you through Slack + TrueFoundry settings and writes hermes.yaml.",
   "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
-  "deploy requires TFY_HOST and TFY_API_KEY unless --skip-live-checks is given."
+  "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
+  "deploy reads ~/.truefoundry/credentials.json after tfy login when TFY_HOST/TFY_API_KEY are unset."
 ].join("\n");
+
+export const DEFAULT_TFY_CREDENTIALS_PATH = path.join(homedir(), ".truefoundry", "credentials.json");
+
+export const TFY_LOGIN_HINT = [
+  "TrueFoundry credentials not found.",
+  "Run: tfy login --host https://<tenant>.truefoundry.cloud",
+  "For production agents, prefer: tfy login --host <url> --api-key <virtual-account-pat>",
+  "Or set TFY_HOST and TFY_API_KEY in your shell."
+].join(" ");
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -105,6 +115,47 @@ function normalizeHost(value) {
 
 function baseTfyUrl() {
   return (process.env.TFY_HOST || "").replace(/\/+$/, "");
+}
+
+export function parseTfyCredentialsJson(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text || ""));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const host = String(parsed.host || "").trim().replace(/\/+$/, "");
+  const accessToken = String(parsed.access_token || parsed.accessToken || "").trim();
+  if (!host || !accessToken) return null;
+  return { host, accessToken };
+}
+
+export async function readTfyCredentialsFile(credentialsPath = DEFAULT_TFY_CREDENTIALS_PATH) {
+  try {
+    return parseTfyCredentialsJson(await readFile(credentialsPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function resolveTfyCredentials({ required }) {
+  const hasEnvHost = Boolean(String(process.env.TFY_HOST || "").trim());
+  const hasEnvKey = Boolean(String(process.env.TFY_API_KEY || "").trim());
+  if (hasEnvHost && hasEnvKey) return "env";
+
+  const fileCreds = await readTfyCredentialsFile();
+  if (fileCreds) {
+    if (!hasEnvHost) process.env.TFY_HOST = fileCreds.host;
+    if (!hasEnvKey) process.env.TFY_API_KEY = fileCreds.accessToken;
+  }
+
+  if (baseTfyUrl() && String(process.env.TFY_API_KEY || "").trim()) {
+    return hasEnvHost && hasEnvKey ? "env" : "credentials.json";
+  }
+  if (required) throw new Error(TFY_LOGIN_HINT);
+  return null;
 }
 
 function tenantFromHost(hostname) {
@@ -395,7 +446,7 @@ function liveChecksAvailable() {
 }
 
 async function tfyFetch(apiPath, options = {}) {
-  if (!liveChecksAvailable()) throw new Error("TFY_HOST and TFY_API_KEY are required for live checks");
+  if (!liveChecksAvailable()) throw new Error(TFY_LOGIN_HINT);
   const res = await fetch(`${baseTfyUrl()}${apiPath}`, {
     ...options,
     headers: {
@@ -584,7 +635,7 @@ async function checkCollisions(config, allowUpdate) {
 
 async function liveValidate(config, { allowUpdate, skipLiveChecks }) {
   if (skipLiveChecks) return;
-  if (!liveChecksAvailable()) throw new Error("deploy requires TFY_HOST and TFY_API_KEY (or pass --skip-live-checks)");
+  if (!liveChecksAvailable()) throw new Error(TFY_LOGIN_HINT);
   await checkWorkspace(config);
   await checkSecretGroup(config);
   await checkCollisions(config, allowUpdate);
@@ -667,6 +718,7 @@ async function promptList(rl, label, { validate } = {}) {
 }
 
 async function runInit() {
+  await resolveTfyCredentials({ required: false });
   const rl = readline.createInterface({ input, output, terminal: true });
   try {
     console.log("This wizard writes hermes.yaml and slack-app-manifest.json in the current directory.\n");
@@ -752,6 +804,7 @@ async function runInit() {
 
 async function runDeploy(file, flags) {
   const config = await readHermesConfig(file);
+  await resolveTfyCredentials({ required: !flags["skip-live-checks"] });
   process.env.TFY_HOST ||= controlPlaneUrl(config);
 
   await ensureSecretGroup(config, file, {

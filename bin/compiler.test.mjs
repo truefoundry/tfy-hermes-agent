@@ -21,6 +21,7 @@ import {
   serializeManifest,
   readHermesConfig,
   isDirectInvocation,
+  parseTfyCredentialsJson,
   generateRunTokenSecret,
   parseHermesSecretsLocalContent,
   runTokenNeedsWrite
@@ -49,6 +50,20 @@ function fakeConfig(overrides = {}) {
     ...overrides
   };
 }
+
+test("parseTfyCredentialsJson reads host and access_token from tfy login file", () => {
+  const creds = parseTfyCredentialsJson(JSON.stringify({
+    host: "https://tfy-eo.truefoundry.cloud/",
+    access_token: "pat-token",
+    refresh_token: "refresh"
+  }));
+  assert.deepEqual(creds, {
+    host: "https://tfy-eo.truefoundry.cloud",
+    accessToken: "pat-token"
+  });
+  assert.equal(parseTfyCredentialsJson("{}"), null);
+  assert.equal(parseTfyCredentialsJson(""), null);
+});
 
 test("parseHermesSecretsLocalContent reads HERMES-RUN-TOKEN-SECRET from init output", () => {
   const text = "# comment\nHERMES-RUN-TOKEN-SECRET=abc123def456\n";

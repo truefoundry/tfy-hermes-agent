@@ -37,7 +37,8 @@ Hard stop until these are satisfied:
    pip install -U "truefoundry"
    tfy login --host https://<tenant>.truefoundry.cloud
    ```
-   Or `TFY_HOST` + `TFY_API_KEY` set in the shell (used by both `tfy` and `deploy`).
+   Or `TFY_HOST` + `TFY_API_KEY` in the shell (overrides `credentials.json`).
+   If `~/.truefoundry/credentials.json` is missing, stop and have the user run `tfy login --host https://<tenant>.truefoundry.cloud`.
 
 2. **tfy-hermes-agent** installed in the user's project or globally:
    ```bash
@@ -208,7 +209,7 @@ When stopping, give exactly one concrete task and the file/path/name the user ne
 
 The flow is complete only when:
 
-- Both CLIs installed; `TFY_HOST`/`TFY_API_KEY` authenticate
+- Both CLIs installed; TrueFoundry credentials available via `tfy login` or env vars
 - `hermes.yaml` exists and `deploy` succeeds (live validation passed and `tfy apply` reported success for volume, controller, and executor)
 - SecretGroup exists with all four keys filled
 - Slack app installed (if Slack is in scope)

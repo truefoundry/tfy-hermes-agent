@@ -24,12 +24,14 @@ pip install -U "truefoundry"
 tfy login --host https://<your-tenant>.truefoundry.cloud
 ```
 
-Or set env vars (used by both `tfy` and `tfy-hermes-agent deploy`):
+Or set env vars explicitly (overrides `credentials.json`):
 
 ```bash
 export TFY_HOST=https://<your-tenant>.truefoundry.cloud
 export TFY_API_KEY=<your-pat>
 ```
+
+If `~/.truefoundry/credentials.json` is missing or empty, `deploy` stops and asks you to run `tfy login` first.
 
 Verify:
 
@@ -163,7 +165,7 @@ With `--update`, a fourth file is also emitted:
 |---|---|---|
 | `<name>-secrets.scaffold.yaml` | SecretGroup | Metadata scaffold only — values still come from the UI |
 
-Apply to TrueFoundry (runs live validation first, then `tfy apply` on each manifest in order: volume → controller → executor):
+Apply to TrueFoundry (reads `~/.truefoundry/credentials.json` from `tfy login` if env vars are unset; otherwise asks you to log in):
 
 ```bash
 tfy-hermes-agent deploy hermes.yaml
