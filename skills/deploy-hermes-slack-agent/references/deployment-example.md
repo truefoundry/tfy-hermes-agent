@@ -28,10 +28,16 @@ Collect these first:
 - `secrets`: SecretGroup name, default `<name>-hermes-secrets`
 - `slack`: optional access policy with `allowed_channels` and `allowed_users` lists
 
+Install from the repo:
+
+```bash
+git clone https://github.com/truefoundry/tfy-hermes-agent.git && cd tfy-hermes-agent && npm ci
+```
+
 `init` walks the user through these interactively:
 
 ```bash
-npx @truefoundry/tfy-hermes-agent init
+node bin/tfy-hermes-agent.mjs init
 ```
 
 ## hermes.yaml
@@ -99,7 +105,7 @@ Do not ask the user to paste these values into chat. They go directly into the T
 
 ## Slack App
 
-1. Run `npx @truefoundry/tfy-hermes-agent init` to generate `slack-app-manifest.json`.
+1. Run `node bin/tfy-hermes-agent.mjs init` to generate `slack-app-manifest.json`.
 2. User creates the Slack app from the manifest.
 3. User installs the app into the workspace.
 4. User copies the signing secret and bot token into the SecretGroup.
@@ -117,7 +123,7 @@ is set, only those channel/group/DM IDs can trigger the agent. If
 ## Deployment
 
 ```bash
-npx @truefoundry/tfy-hermes-agent deploy hermes.yaml
+node bin/tfy-hermes-agent.mjs deploy hermes.yaml
 ```
 
 Flags:

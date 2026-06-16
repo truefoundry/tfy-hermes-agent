@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -636,10 +637,13 @@ async function main() {
   throw new Error(`unknown command: ${parsed.command}\n\n${USAGE}`);
 }
 
-function isDirectInvocation() {
-  if (!process.argv[1]) return false;
-  try { return fileURLToPath(import.meta.url) === process.argv[1]; }
-  catch { return false; }
+export function isDirectInvocation(entryPath = process.argv[1]) {
+  if (!entryPath) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
 }
 
 if (isDirectInvocation()) {
