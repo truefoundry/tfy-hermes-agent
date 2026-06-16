@@ -39,7 +39,7 @@ CLI auth: `deploy` reads `~/.truefoundry/credentials.json` from `tfy login` (`ho
 - **Run tests:** `npm run check` (29 tests, syntax checks, ~500ms).
 - **Build images locally:** `docker build -f Dockerfile.controller -t hermes-controller:local .` and `docker build -f Dockerfile.executor -t hermes-executor:local .`. Both build clean on Apple Silicon and linux/amd64; if a remote build fails and a local build passes, the platform's build farm is the suspect (start by trying the commit SHA in `version:` instead of a branch name with slashes — TF's git puller has issues with branch names containing `/`).
 - **Smoke-test the controller:** boot with `docker run -e TFY_API_KEY=x -e HERMES_RUN_TOKEN_SECRET=y -e HERMES_SKIP_EXECUTOR_DISPATCH=1 -p 8787:8787 hermes-controller:local` and curl `/api/health`.
-- **Emit manifests without applying:** `tfy-hermes-agent deploy examples/agent.hermes.yaml --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
+- **Emit manifests without applying:** `tfy-hermes-agent deploy devrel-assistant --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
 - **Force a controller restart without a rebuild** (to pick up new SecretGroup values): re-`tfy apply -f <controller-manifest>` with the same file. Rolling restart, ~30s, no build.
 
 ## Lessons learned the hard way (so far)

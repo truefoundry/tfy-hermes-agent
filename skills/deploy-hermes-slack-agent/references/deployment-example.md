@@ -60,20 +60,20 @@ npm install github:truefoundry/tfy-hermes-agent
 
 Global install optional: `npm install -g github:truefoundry/tfy-hermes-agent`
 
-### 2. Write `hermes.yaml`
+### 2. Create agent config
 
 ```bash
 tfy-hermes-agent init
 # API-only: tfy-hermes-agent init --api-only
 ```
 
-Writes `<name>.hermes.yaml` (from the agent handle), `slack-app-manifest.json` (unless `--api-only`), and `.hermes-secrets.local` (generated HMAC secret).
+Creates `agents/<name>/` with `<name>.yaml`, `slack-app-manifest.json` (unless `--api-only`), `.hermes-secrets.local`, and `deployments/`.
 
 **Wizard prompts:** required fields (`name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` name), then optional (`version`, `host`, `instructions`, `skills`, `mcp_servers`, and Slack allowlists — blank skips, omitted from yaml). `--api-only` skips Slack file and Slack optional prompts.
 
 ### 3. Slack app (skip if API-only)
 
-1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → `slack-app-manifest.json`
+1. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → `agents/<name>/slack-app-manifest.json`
 2. Install to workspace
 3. Copy bot token + signing secret (paste into SecretGroup after deploy in step 4)
 
@@ -86,16 +86,16 @@ No separate SecretGroup step. `deploy` auto-creates the group, sets `HERMES-RUN-
 Preview:
 
 ```bash
-tfy-hermes-agent deploy hermes.yaml --skip-live-checks --emit-manifests ./manifests
+tfy-hermes-agent deploy devrel-assistant --skip-live-checks
 ```
 
 Apply:
 
 ```bash
-tfy-hermes-agent deploy hermes.yaml
+tfy-hermes-agent deploy devrel-assistant
 ```
 
-`deploy` applies in order:
+Compiled manifests land in `agents/<name>/deployments/`. `deploy` applies them with `tfy apply -f` in order:
 
 ```text
 <name>-volume.yaml       → Volume (10Gi RWO, /data on controller)

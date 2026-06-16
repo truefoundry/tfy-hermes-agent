@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline/promises";
@@ -40,14 +40,16 @@ const SECRET_PLACEHOLDER_VALUES = new Set([
 const USAGE = [
   "Usage:",
   "  tfy-hermes-agent init [--api-only]",
-  "  tfy-hermes-agent deploy <hermes.yaml> [--update] [--emit-manifests <dir>] [--skip-live-checks]",
+  "  tfy-hermes-agent deploy <name> | agents/<name>/<name>.yaml [--update] [--emit-manifests <dir>] [--skip-live-checks]",
   "",
-  "init walks you through agent settings (required + optional fields) and writes <name>.hermes.yaml plus .hermes-secrets.local.",
+  "init creates agents/<name>/ with <name>.yaml, .hermes-secrets.local, and slack-app-manifest.json (unless --api-only).",
   "init --api-only skips Slack file output and Slack optional prompts.",
-  "deploy auto-creates the SecretGroup and sets HERMES-RUN-TOKEN-SECRET + TFY-API-KEY from credentials.json.",
-  "deploy validates the config and applies the controller, executor, and volume to TrueFoundry.",
+  "deploy auto-creates the SecretGroup via API, compiles manifests to agents/<name>/deployments/, then tfy apply -f each file.",
+  "deploy validates the config unless --skip-live-checks (compile-only preview).",
   "deploy reads ~/.truefoundry/credentials.json after tfy login when TFY_HOST/TFY_API_KEY are unset."
 ].join("\n");
+
+const AGENTS_DIR = "agents";
 
 export const DEFAULT_TFY_CREDENTIALS_PATH = path.join(homedir(), ".truefoundry", "credentials.json");
 
@@ -74,7 +76,7 @@ function parseArgs(argv) {
   if (command !== "deploy") throw new Error(`unknown command: ${command}\n\n${USAGE}`);
 
   const file = rest.shift();
-  if (!file || file.startsWith("--")) throw new Error("deploy requires a hermes.yaml path");
+  if (!file || file.startsWith("--")) throw new Error("deploy requires an agent name or config path (e.g. my-bot or agents/my-bot/my-bot.yaml)");
   const flags = {};
   for (let index = 0; index < rest.length; index += 1) {
     const item = rest[index];
@@ -104,6 +106,30 @@ function slugifyName(value) {
     throw new Error("name must be 2-32 chars and use lowercase letters, numbers, and hyphens (Slack handle limit)");
   }
   return name;
+}
+
+export function agentPaths(name, root = process.cwd()) {
+  const handle = slugifyName(name);
+  const dir = path.join(root, AGENTS_DIR, handle);
+  return {
+    handle,
+    dir,
+    config: path.join(dir, `${handle}.yaml`),
+    deployments: path.join(dir, "deployments"),
+    slackManifest: path.join(dir, "slack-app-manifest.json"),
+    secretsLocal: path.join(dir, ".hermes-secrets.local")
+  };
+}
+
+export function resolveAgentConfigPath(input, root = process.cwd()) {
+  const raw = String(input || "").trim();
+  if (!raw) throw new Error("deploy requires an agent name or config path");
+
+  if (/\.ya?ml$/i.test(raw)) {
+    return path.resolve(root, raw);
+  }
+
+  return agentPaths(raw, root).config;
 }
 
 function normalizeHost(value) {
@@ -671,20 +697,11 @@ async function emitManifestsToDir(items, outDir) {
   }
 }
 
-async function applyManifests(items) {
-  // TrueFoundry CLI's `tfy apply -f` requires a real file path; it does not
-  // read stdin. Stage each manifest in a temp dir, apply, then clean up.
-  const stageDir = path.join(tmpdir(), `tfy-hermes-${randomBytes(6).toString("hex")}`);
-  await mkdir(stageDir, { recursive: true });
-  try {
-    for (const { filename, manifest } of items) {
-      const stagedPath = path.join(stageDir, filename);
-      await writeFile(stagedPath, serializeManifest(manifest, filename));
-      console.log(`tfy apply ${filename}`);
-      await run("tfy", ["apply", "-f", stagedPath]);
-    }
-  } finally {
-    await rm(stageDir, { recursive: true, force: true });
+async function applyManifestsFromDir(items, outDir) {
+  for (const { filename } of items) {
+    const manifestPath = path.join(outDir, filename);
+    console.log(`tfy apply ${path.relative(process.cwd(), manifestPath) || filename}`);
+    await run("tfy", ["apply", "-f", manifestPath]);
   }
 }
 
@@ -748,11 +765,11 @@ async function runInit(flags = {}) {
   try {
     console.log(
       apiOnly
-        ? "This wizard writes <name>.hermes.yaml and .hermes-secrets.local in the current directory.\n"
-        : "This wizard writes <name>.hermes.yaml, slack-app-manifest.json, and .hermes-secrets.local in the current directory.\n"
+        ? "This wizard creates agents/<name>/ with <name>.yaml and .hermes-secrets.local.\n"
+        : "This wizard creates agents/<name>/ with <name>.yaml, slack-app-manifest.json, and .hermes-secrets.local.\n"
     );
     const handle = await prompt(rl, "Agent handle (2-32 chars, lowercase, hyphens)", { required: true, validate: slugifyName });
-    const yamlFileName = `${handle}.hermes.yaml`;
+    const paths = agentPaths(handle);
     const description = await prompt(rl, "Agent description");
     const model = await prompt(rl, "Model", { def: DEFAULT_MODEL });
     const workspaceFqn = await prompt(rl, "Workspace FQN (cluster:workspace)", {
@@ -789,7 +806,6 @@ async function runInit(flags = {}) {
     }
 
     const runTokenSecret = generateRunTokenSecret();
-    const secretsLocalPath = path.resolve(process.cwd(), ".hermes-secrets.local");
 
     const hermesDoc = {
       name: handle,
@@ -813,18 +829,17 @@ async function runInit(flags = {}) {
     if (skills.length) hermesDoc.skills = skills;
     if (mcpServers.length) hermesDoc.mcp_servers = mcpServers;
 
-    const yamlPath = path.resolve(process.cwd(), yamlFileName);
-    await writeFile(yamlPath, YAML.stringify(hermesDoc, { lineWidth: 0 }));
+    await mkdir(paths.deployments, { recursive: true });
+    await writeFile(paths.config, YAML.stringify(hermesDoc, { lineWidth: 0 }));
 
     if (!apiOnly) {
-      const slackPath = path.resolve(process.cwd(), "slack-app-manifest.json");
       const stubManifest = slackManifest({ name: handle, host: resolveHost(null, handle, workspaceFqn), description });
-      await writeFile(slackPath, `${JSON.stringify(stubManifest, null, 2)}\n`);
-      console.log(`wrote ${slackPath}`);
+      await writeFile(paths.slackManifest, `${JSON.stringify(stubManifest, null, 2)}\n`);
+      console.log(`wrote ${paths.slackManifest}`);
     }
 
     await writeFile(
-      secretsLocalPath,
+      paths.secretsLocal,
       [
         `# Generated by tfy-hermes-agent init — do not commit (see .gitignore)`,
         `HERMES-RUN-TOKEN-SECRET=${runTokenSecret}`,
@@ -833,22 +848,26 @@ async function runInit(flags = {}) {
       { mode: 0o600 }
     );
 
-    console.log(`\nwrote ${yamlPath}`);
-    console.log(`wrote ${secretsLocalPath} (gitignored)\n`);
+    console.log(`\nwrote ${paths.config}`);
+    console.log(`wrote ${paths.secretsLocal} (gitignored)`);
+    console.log(`created ${paths.deployments}/\n`);
     console.log("Generated HERMES-RUN-TOKEN-SECRET for this agent (executor callback HMAC):");
     console.log(`  ${runTokenSecret}`);
     console.log("If updating an existing deployment, keep the SecretGroup value you already use.\n");
     console.log("Next steps:");
+    const deployArg = path.relative(process.cwd(), paths.config) || paths.config;
     if (apiOnly) {
-      console.log(`  1. Run: tfy-hermes-agent deploy ${yamlFileName}`);
+      console.log(`  1. Run: tfy-hermes-agent deploy ${handle}`);
+      console.log("     (or: tfy-hermes-agent deploy " + deployArg + ")");
       console.log("     No manual secret steps — deploy creates the SecretGroup and sets");
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY from credentials.json automatically.");
       console.log("  2. Call /v1/chat/completions on the controller host to verify.");
     } else {
       console.log(`  1. Install the Slack app at ${SLACK_APPS_URL}`);
-      console.log("     Create New App → From an app manifest → paste slack-app-manifest.json → Install App.");
+      console.log("     Create New App → From an app manifest → paste agents/<name>/slack-app-manifest.json → Install App.");
       console.log("     Copy SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET from the app settings.");
-      console.log(`  2. Run: tfy-hermes-agent deploy ${yamlFileName}`);
+      console.log(`  2. Run: tfy-hermes-agent deploy ${handle}`);
+      console.log("     (or: tfy-hermes-agent deploy " + deployArg + ")");
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY are set automatically — no manual step.");
       console.log("     Then paste your Slack tokens into SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET");
       console.log("     in the SecretGroup (the only secrets you enter by hand).");
@@ -860,11 +879,17 @@ async function runInit(flags = {}) {
 }
 
 async function runDeploy(file, flags) {
-  const config = await readHermesConfig(file);
+  const configPath = resolveAgentConfigPath(file);
+  const config = await readHermesConfig(configPath);
+  const agentDir = path.dirname(configPath);
+  const deploymentsDir = flags["emit-manifests"]
+    ? path.resolve(flags["emit-manifests"])
+    : path.join(agentDir, "deployments");
+
   await resolveTfyCredentials({ required: !flags["skip-live-checks"] });
   process.env.TFY_HOST ||= controlPlaneUrl(config);
 
-  await ensureSecretGroup(config, file, {
+  await ensureSecretGroup(config, configPath, {
     skipLiveChecks: Boolean(flags["skip-live-checks"])
   });
 
@@ -875,19 +900,17 @@ async function runDeploy(file, flags) {
 
   const items = planManifests(config, { includeSecrets: Boolean(flags.update) });
 
-  if (flags["emit-manifests"]) {
-    await emitManifestsToDir(items, flags["emit-manifests"]);
-    console.log(`wrote ${items.length} manifest files to ${flags["emit-manifests"]}`);
-  }
+  await emitManifestsToDir(items, deploymentsDir);
+  console.log(`wrote ${items.length} manifest files to ${path.relative(process.cwd(), deploymentsDir) || deploymentsDir}`);
 
   // --skip-live-checks is the "preview offline" mode; never apply in that mode.
   // Otherwise applying without live-validated workspace/secret state is dangerous.
   if (flags["skip-live-checks"]) {
-    console.log("skip-live-checks set: manifests prepared but not applied. Review and run `tfy apply -f <file>` manually, or re-run without --skip-live-checks.");
+    console.log("skip-live-checks set: manifests prepared but not applied. Review files in deployments/, then re-run without --skip-live-checks.");
     return;
   }
 
-  await applyManifests(items);
+  await applyManifestsFromDir(items, deploymentsDir);
 
   console.log("");
   console.log(`Controller: ${config.host.url}`);

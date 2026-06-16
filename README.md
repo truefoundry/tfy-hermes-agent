@@ -44,7 +44,7 @@ tfy-hermes-agent help   # if installed globally; else: npx tfy-hermes-agent help
 
 ## Add this to any codebase
 
-From your project directory (where you want `<name>.hermes.yaml` to live):
+From your project directory (where you want the `agents/` folder):
 
 ```bash
 pip install -U "truefoundry"
@@ -91,7 +91,7 @@ If tfy-hermes-agent is installed locally, use `npx tfy-hermes-agent` or:
 node node_modules/@truefoundry/tfy-hermes-agent/bin/tfy-hermes-agent.mjs
 ```
 
-### 2. Write `hermes.yaml`
+### 2. Create an agent config
 
 Either run the wizard:
 
@@ -100,18 +100,26 @@ tfy-hermes-agent init
 # API-only (no Slack): tfy-hermes-agent init --api-only
 ```
 
-This writes `<name>.hermes.yaml` (from the agent handle), `slack-app-manifest.json`, and `.hermes-secrets.local` (gitignored) with a generated `HERMES-RUN-TOKEN-SECRET`.
+This creates `agents/<name>/` with:
 
-The wizard asks required fields first, then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from `hermes.yaml`. The `secrets` field is only a name — `deploy` creates the SecretGroup.
+```
+agents/<name>/
+├── <name>.yaml                 # source config — edit this
+├── slack-app-manifest.json     # Slack setup (skipped with --api-only)
+├── .hermes-secrets.local       # gitignored HERMES-RUN-TOKEN-SECRET seed
+└── deployments/                # compiled TF manifests (written by deploy)
+```
 
-Or copy `examples/agent.hermes.yaml` and edit it. See [hermes.yaml fields](#hermesyaml-fields) below.
+The wizard asks required fields first, then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from the yaml. The `secrets` field is only a name — `deploy` creates the SecretGroup via API.
+
+Or copy `agents/devrel-assistant/devrel-assistant.yaml` from this package and edit it. See [agent config fields](#agent-config-fields) below.
 
 ### 3. Slack app (skip if API-only)
 
 Only needed if you want Slack. Socket Mode is not supported.
 
-1. `init` already wrote `slack-app-manifest.json`. If you wrote `hermes.yaml` by hand, run `init` once or copy the manifest from a prior run.
-2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → paste `slack-app-manifest.json`.
+1. `init` already wrote `agents/<name>/slack-app-manifest.json`. If you wrote the config by hand, run `init` once or copy the manifest from a prior run.
+2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From an app manifest** → paste `agents/<name>/slack-app-manifest.json`.
 3. **Install App** to your workspace.
 4. Copy from the Slack app settings (paste into the SecretGroup after deploy in step 4):
    - **OAuth & Permissions** → **Bot User OAuth Token** → `SLACK-BOT-TOKEN`
@@ -121,8 +129,8 @@ Only needed if you want Slack. Socket Mode is not supported.
 
 `deploy` is the only command that touches TrueFoundry. It auto-provisions secrets you do **not** need to set manually:
 
-- Creates the SecretGroup named in `hermes.yaml` `secrets` (if missing)
-- Sets `HERMES-RUN-TOKEN-SECRET` from `.hermes-secrets.local` (or generates one)
+- Creates the SecretGroup named in the agent yaml `secrets` field (if missing)
+- Sets `HERMES-RUN-TOKEN-SECRET` from `agents/<name>/.hermes-secrets.local` (or generates one)
 - Sets `TFY-API-KEY` from `~/.truefoundry/credentials.json` or shell `TFY_API_KEY`
 
 For Slack, the **only** manual secret step is pasting `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
@@ -132,10 +140,10 @@ Manual SecretGroup creation is only needed if `deploy` cannot discover a secret-
 Preview manifests without applying:
 
 ```bash
-tfy-hermes-agent deploy hermes.yaml --skip-live-checks --emit-manifests ./manifests
+tfy-hermes-agent deploy devrel-assistant --skip-live-checks
 ```
 
-This writes:
+This compiles into `agents/devrel-assistant/deployments/`:
 
 | File | Resource | What it is |
 |---|---|---|
@@ -143,25 +151,24 @@ This writes:
 | `<name>-controller.yaml` | Service | Long-running HTTP service (Slack + `/v1/*`) |
 | `<name>-executor.yaml` | Job | Per-turn Hermes runner (triggered manually by the controller) |
 
-With `--update`, a fourth file is also emitted:
-
-| File | Resource | What it is |
-|---|---|---|
-| `<name>-secrets.scaffold.yaml` | SecretGroup | Metadata scaffold only — values still come from the UI |
+SecretGroup is **not** a deployments file — `deploy` provisions it via API before apply.
 
 Apply to TrueFoundry (reads `~/.truefoundry/credentials.json` from `tfy login` if env vars are unset; otherwise asks you to log in):
 
 ```bash
-tfy-hermes-agent deploy hermes.yaml
+tfy-hermes-agent deploy devrel-assistant
+# or: tfy-hermes-agent deploy agents/devrel-assistant/devrel-assistant.yaml
 ```
+
+`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order (volume → controller → executor).
 
 Flags:
 
-- `--update` — overwrite an existing deployment of the same name; also applies the secrets scaffold.
-- `--emit-manifests <dir>` — write YAML files to disk in addition to applying.
-- `--skip-live-checks` — preview offline only; does not apply.
+- `--update` — overwrite an existing deployment of the same name.
+- `--emit-manifests <dir>` — write compiled yaml to a custom directory instead of `deployments/`.
+- `--skip-live-checks` — compile only; does not apply or provision secrets.
 
-After a git-source image change, rebuild with `tfy deploy --force -f <manifest>` (not plain `tfy apply`).
+After a git-source image change, rebuild with `tfy deploy --force -f agents/<name>/deployments/<name>-controller.yaml` (and executor) — not plain `tfy apply`.
 
 For Slack deployments, after deploy confirm **Event Subscriptions** and **Interactivity** URLs match your controller host:
 
@@ -182,7 +189,7 @@ Send a Slack mention or call `/v1/chat/completions` to confirm end-to-end.
 
 ---
 
-## `hermes.yaml` fields
+## Agent config fields
 
 ```yaml
 # Required

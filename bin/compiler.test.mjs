@@ -1,10 +1,9 @@
 // Unit tests for the deploy-time manifest builders. The CLI exposes
-// `init` and `deploy` only — no compile, no validate, no intermediate
-// YAML files on disk by default — so we exercise the pure helpers directly
-// instead of shelling out to the binary.
+// `init` and `deploy` only — init writes agent config under agents/<name>/,
+// deploy compiles manifests to agents/<name>/deployments/.
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +23,9 @@ import {
   parseTfyCredentialsJson,
   generateRunTokenSecret,
   parseHermesSecretsLocalContent,
-  runTokenNeedsWrite
+  runTokenNeedsWrite,
+  agentPaths,
+  resolveAgentConfigPath
 } from "./tfy-hermes-agent.mjs";
 
 const cliPath = fileURLToPath(new URL("./tfy-hermes-agent.mjs", import.meta.url));
@@ -199,11 +200,34 @@ test("serializeManifest emits YAML for .yaml filenames and JSON for .json filena
   assert.deepEqual(JSON.parse(jsonText), { a: 1 });
 });
 
-test("readHermesConfig validates and normalizes the example hermes.yaml", async () => {
+test("agentPaths lays out agents/<name>/ with config, deployments, and secrets local", () => {
+  const root = "/tmp/project";
+  const paths = agentPaths("devrel-assistant", root);
+  assert.equal(paths.handle, "devrel-assistant");
+  assert.equal(paths.dir, path.join(root, "agents", "devrel-assistant"));
+  assert.equal(paths.config, path.join(root, "agents", "devrel-assistant", "devrel-assistant.yaml"));
+  assert.equal(paths.deployments, path.join(root, "agents", "devrel-assistant", "deployments"));
+  assert.equal(paths.slackManifest, path.join(root, "agents", "devrel-assistant", "slack-app-manifest.json"));
+  assert.equal(paths.secretsLocal, path.join(root, "agents", "devrel-assistant", ".hermes-secrets.local"));
+});
+
+test("resolveAgentConfigPath accepts a short name or explicit yaml path", () => {
+  const root = "/tmp/project";
+  assert.equal(
+    resolveAgentConfigPath("devrel-assistant", root),
+    path.join(root, "agents", "devrel-assistant", "devrel-assistant.yaml")
+  );
+  assert.equal(
+    resolveAgentConfigPath("agents/devrel-assistant/devrel-assistant.yaml", root),
+    path.join(root, "agents", "devrel-assistant", "devrel-assistant.yaml")
+  );
+});
+
+test("readHermesConfig validates and normalizes the example agent config", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "tfy-hermes-config-test-"));
   try {
-    const yamlPath = path.join(dir, "agent.hermes.yaml");
-    // Mirror examples/agent.hermes.yaml with a deterministic host override
+    const yamlPath = path.join(dir, "agents", "devrel-assistant", "devrel-assistant.yaml");
+    await mkdir(path.dirname(yamlPath), { recursive: true });
     // so the test does not rely on TFY_HOST tenant inference.
     const config = {
       name: "devrel-assistant",
