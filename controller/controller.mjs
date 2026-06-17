@@ -417,6 +417,7 @@ async function triggerExecutor({ run, agent, content, callbackToken, slack = nul
     publicBaseUrl: PUBLIC_BASE_URL,
     hermesModel: HERMES_MODEL
   });
+  stmts.setRunWorkPayload.run(JSON.stringify(work), now(), run.id);
   return dispatchExecutorTurn({
     backend: HERMES_EXECUTOR_BACKEND,
     tfyHost: TFY_HOST,
@@ -1330,6 +1331,19 @@ async function handle(req, res) {
       stmts.completeRun.run(status, body?.result || "", body?.error || null, now(), runId);
       publish(runId, { type: "complete", status, error: body?.error || null });
       return send(res, 200, { run: rowToRun(stmts.getRunById.get(runId)) });
+    }
+
+    const internalWorkMatch = path.match(/^\/api\/internal\/runs\/([^/]+)\/work$/);
+    if (internalWorkMatch && method === "GET") {
+      const runId = internalWorkMatch[1];
+      if (!requireInternalRun(req, res, runId)) return;
+      const row = stmts.getRunById.get(runId);
+      if (!row?.work_payload) return send(res, 404, { error: "work payload not found" });
+      try {
+        return send(res, 200, { work: JSON.parse(row.work_payload) });
+      } catch {
+        return send(res, 500, { error: "stored work payload is invalid" });
+      }
     }
 
     const internalDbMatch = path.match(/^\/api\/internal\/runs\/([^/]+)\/session-db$/);

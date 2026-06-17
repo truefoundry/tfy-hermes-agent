@@ -7,7 +7,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const PRAGMAS = [
   'PRAGMA journal_mode = WAL',
@@ -52,6 +52,7 @@ const SCHEMA_STATEMENTS = [
     openai_kind       TEXT,
     openai_id         TEXT,
     trigger           TEXT,
+    work_payload      TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL
   )`,
@@ -113,6 +114,11 @@ function runMigrations(db) {
     for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
   });
   ddl();
+
+  const runColumns = new Set(db.prepare('PRAGMA table_info(runs)').all().map((row) => row.name));
+  if (!runColumns.has('work_payload')) {
+    db.exec('ALTER TABLE runs ADD COLUMN work_payload TEXT');
+  }
 
   const row = db.prepare('SELECT version FROM wrapper_schema_version LIMIT 1').get();
   if (!row) {
@@ -185,6 +191,7 @@ export function prepareStatements(db) {
     setRunDispatched: db.prepare('UPDATE runs SET status = ?, trigger = ?, updated_at = ? WHERE id = ?'),
     setRunFailed: db.prepare("UPDATE runs SET status = 'failed', error = ?, trigger = ?, updated_at = ? WHERE id = ?"),
     setRunStatus: db.prepare('UPDATE runs SET status = ?, updated_at = ? WHERE id = ?'),
+    setRunWorkPayload: db.prepare('UPDATE runs SET work_payload = ?, updated_at = ? WHERE id = ?'),
     completeRun: db.prepare(`
       UPDATE runs SET status = ?, result = ?, error = ?, updated_at = ? WHERE id = ?
     `),

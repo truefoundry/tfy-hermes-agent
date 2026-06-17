@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * End-to-end smoke: Slack event → artifact ingest (mocked TFY) → HARNESS_WORK_B64 → executor prompt.
+ * End-to-end smoke: Slack event → artifact ingest (mocked TFY) → work payload → executor prompt.
  * Run: node controller/slack-files-smoke.mjs
  */
 
@@ -92,7 +92,7 @@ function mockFetch({ slackBodies, artifactClient }) {
 }
 
 function buildHarnessWork({ content, slack, attachments }) {
-  const work = {
+  return {
     run_id: RUN_ID,
     hermes_session_id: "session_smoke",
     content,
@@ -111,8 +111,6 @@ function buildHarnessWork({ content, slack, attachments }) {
     callback_url: "https://controller.example",
     controller_event_url: `https://controller.example/api/internal/runs/${RUN_ID}/events`
   };
-  const workB64 = Buffer.from(JSON.stringify(work), "utf8").toString("base64");
-  return { work, workB64 };
 }
 
 async function main() {
@@ -158,8 +156,7 @@ async function main() {
     fallbackHandle: "hermes"
   });
 
-  const { work, workB64 } = buildHarnessWork({ content: prompt, slack: slackContext, attachments });
-  const decoded = JSON.parse(Buffer.from(workB64, "base64").toString("utf8"));
+  const decoded = buildHarnessWork({ content: prompt, slack: slackContext, attachments });
 
   assert.equal(decoded.run_id, RUN_ID);
   assert.equal(decoded.attachments.length, 2);
@@ -186,7 +183,7 @@ async function main() {
   console.log("\n3. Attachments passed to executor");
   console.log(JSON.stringify(attachments, null, 2));
 
-  console.log("\n4. HARNESS_WORK_B64 decoded (attachments + prompt excerpt)");
+  console.log("\n4. Work payload (attachments + prompt excerpt)");
   console.log(JSON.stringify({
     run_id: decoded.run_id,
     attachment_count: decoded.attachments.length,

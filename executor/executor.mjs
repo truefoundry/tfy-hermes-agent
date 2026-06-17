@@ -2,19 +2,12 @@ import { executeTurn } from "./run-turn.mjs";
 
 const errMsg = (e) => e instanceof Error ? e.message : String(e);
 
-const workB64 = process.env.HARNESS_WORK_B64 || "";
 const callbackToken = process.env.HARNESS_CALLBACK_TOKEN || "";
+const callbackBase = String(process.argv[2] || "").replace(/\/+$/, "");
+const runId = String(process.argv[3] || "").trim();
 
-if (!workB64) {
-  console.error("HARNESS_WORK_B64 is required");
-  process.exit(2);
-}
-
-let payload;
-try {
-  payload = JSON.parse(Buffer.from(workB64, "base64").toString("utf8"));
-} catch (error) {
-  console.error(`HARNESS_WORK_B64 could not be decoded: ${errMsg(error)}`);
+if (!callbackBase || !runId) {
+  console.error("usage: node executor/executor.mjs <callback_url> <run_id>");
   process.exit(2);
 }
 
@@ -23,7 +16,20 @@ if (!callbackToken) {
   process.exit(2);
 }
 
+async function fetchWork() {
+  const res = await fetch(`${callbackBase}/api/internal/runs/${encodeURIComponent(runId)}/work`, {
+    headers: { authorization: `Bearer ${callbackToken}` }
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`work fetch failed ${res.status}: ${text.slice(0, 500)}`);
+  const payload = text ? JSON.parse(text) : {};
+  const work = payload.work;
+  if (!work || work.run_id !== runId) throw new Error("invalid work payload");
+  return work;
+}
+
 try {
+  const payload = await fetchWork();
   await executeTurn(payload, callbackToken);
 } catch (error) {
   console.error(errMsg(error));

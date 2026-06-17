@@ -63,7 +63,7 @@ describe("triggerExecutorService", () => {
 });
 
 describe("triggerTruefoundryJob", () => {
-  it("triggers a TF job with base64 work payload", async () => {
+  it("triggers a TF job that fetches work from the controller", async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {
       calls.push({ url, init });
@@ -85,7 +85,9 @@ describe("triggerTruefoundryJob", () => {
     assert.equal(calls[0].url, "https://tfy.example/api/svc/v1/jobs/trigger");
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.deploymentId, "dep_1");
-    assert.match(body.input.command, /HARNESS_WORK_B64=/);
+    assert.match(body.input.command, /HARNESS_CALLBACK_TOKEN=/);
+    assert.match(body.input.command, /https:\/\/c/);
+    assert.match(body.input.command, /run_job/);
     assert.match(body.input.command, /node executor\/executor\.mjs/);
   });
 });

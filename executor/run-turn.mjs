@@ -8,6 +8,16 @@ import { pipeline } from "node:stream/promises";
 import { extract as tarExtract } from "tar";
 
 const errMsg = (e) => e instanceof Error ? e.message : String(e);
+const DEFAULT_MAX_ATTACHMENTS = 10;
+const DEFAULT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
+function executorWorkspaceRoot(env = process.env) {
+  return env.HOME || "/workspace";
+}
+
+function executorHermesHome(env = process.env) {
+  return env.HERMES_HOME || path.join(executorWorkspaceRoot(env), ".hermes");
+}
 
 function turnContext(work, callbackToken) {
   const runId = work?.run_id;
@@ -60,6 +70,102 @@ function emitRunEvent(ctx, type, text) {
 }
 
 const yamlString = (v) => JSON.stringify(String(v || ""));
+
+function safeAttachmentFilename(attachment, index) {
+  const source = attachment?.artifact_path || attachment?.filename || `attachment-${index + 1}`;
+  const base = path.basename(String(source || `attachment-${index + 1}`));
+  const cleaned = base
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 180);
+  const fallback = `attachment-${index + 1}`;
+  const name = cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : fallback;
+  const id = String(attachment?.slack_file_id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 32);
+  return id && !name.startsWith(`${id}-`) ? `${id}-${name}` : name;
+}
+
+async function downloadAttachment({ attachment, targetPath, tfyApiKey, maxBytes, fetchImpl = fetch }) {
+  if (!attachment?.download_url) throw new Error(`attachment ${attachment?.filename || targetPath} is missing download_url`);
+  const headers = tfyApiKey ? { authorization: `Bearer ${tfyApiKey}` } : {};
+  const res = await fetchImpl(attachment.download_url, { headers });
+  const textForError = async () => {
+    try { return (await res.text()).slice(0, 300); } catch { return ""; }
+  };
+  if (!res.ok) throw new Error(`attachment download failed ${res.status}: ${await textForError()}`);
+
+  const length = Number(res.headers.get("content-length") || 0);
+  if (length > maxBytes) throw new Error(`attachment exceeds ${maxBytes} byte limit (${length} bytes)`);
+  if (!res.body) throw new Error("attachment download response had no body");
+
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of res.body) {
+    const buffer = Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) throw new Error(`attachment exceeds ${maxBytes} byte limit`);
+    chunks.push(buffer);
+  }
+  await writeFile(targetPath, Buffer.concat(chunks), { mode: 0o600 });
+  return total;
+}
+
+export async function materializeAttachments({
+  work,
+  workspaceRoot,
+  tfyApiKey,
+  fetchImpl = fetch,
+  maxFiles = DEFAULT_MAX_ATTACHMENTS,
+  maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES
+}) {
+  const attachments = Array.isArray(work?.attachments) ? work.attachments.filter((item) => item?.download_url) : [];
+  if (!attachments.length) return [];
+  if (attachments.length > maxFiles) {
+    throw new Error(`work payload has ${attachments.length} attachments; maximum is ${maxFiles}`);
+  }
+  const runId = String(work?.run_id || "run").replace(/[^a-zA-Z0-9_-]/g, "");
+  const inboundDir = path.join(workspaceRoot, "inbound", runId || "run");
+  await rm(inboundDir, { recursive: true, force: true });
+  await mkdir(inboundDir, { recursive: true });
+
+  const materialized = [];
+  for (const [index, attachment] of attachments.entries()) {
+    const filename = safeAttachmentFilename(attachment, index);
+    const localPath = path.join(inboundDir, filename);
+    const bytes = await downloadAttachment({
+      attachment,
+      targetPath: localPath,
+      tfyApiKey,
+      maxBytes,
+      fetchImpl
+    });
+    materialized.push({
+      ...attachment,
+      local_path: localPath,
+      local_bytes: bytes
+    });
+  }
+  return materialized;
+}
+
+export function appendMaterializedAttachmentsToPrompt(prompt, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return String(prompt || "");
+  const blocks = attachments.map((attachment) => [
+    `- filename: ${attachment.filename || path.basename(attachment.local_path)}`,
+    attachment.mime_type ? `  mime_type: ${attachment.mime_type}` : null,
+    `  local_path: ${attachment.local_path}`,
+    Number.isFinite(Number(attachment.local_bytes)) ? `  local_bytes: ${attachment.local_bytes}` : null,
+    attachment.artifact_fqn ? `  artifact_fqn: ${attachment.artifact_fqn}` : null,
+    attachment.artifact_path ? `  artifact_path: ${attachment.artifact_path}` : null
+  ].filter(Boolean).join("\n"));
+  return [
+    String(prompt || "").trimEnd(),
+    [
+      "Downloaded file attachments are available in the executor workspace.",
+      "Use the local_path values below when the task refers to an attachment:",
+      blocks.join("\n")
+    ].join("\n")
+  ].filter(Boolean).join("\n\n") + "\n";
+}
 
 function mcpServerNameFromUrl(value, index) {
   try {
@@ -390,7 +496,9 @@ async function runHermes(ctx, work, secrets) {
   if (model) env.HERMES_MODEL = model;
   env.HERMES_YOLO_MODE = "1";
   env.HERMES_ACCEPT_HOOKS = "1";
-  env.HERMES_HOME = "/workspace/.hermes";
+  const workspaceRoot = executorWorkspaceRoot(env);
+  env.HOME = workspaceRoot;
+  env.HERMES_HOME = executorHermesHome(env);
   env.HERMES_SESSION_ID = ctx.hermesSessionId;
   env.HARNESS_EVENT_URL = `${ctx.callbackBase}${ctx.eventsPath}`;
   env.HARNESS_CALLBACK_TOKEN = ctx.callbackToken;
@@ -399,8 +507,26 @@ async function runHermes(ctx, work, secrets) {
   const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
   const sessionDownload = await downloadSessionDb(ctx, hermesHome);
   const installedSkills = await installAgentSkills(ctx, env, work.agent?.skills);
+  const materializedAttachments = await materializeAttachments({
+    work,
+    workspaceRoot,
+    tfyApiKey: env.TFY_API_KEY
+  });
+  if (materializedAttachments.length) {
+    env.HERMES_ATTACHMENTS_DIR = path.dirname(materializedAttachments[0].local_path);
+    await emitRunEvent(ctx, "executor_diagnostic", JSON.stringify({
+      phase: "attachments",
+      count: materializedAttachments.length,
+      files: materializedAttachments.map((item) => ({
+        filename: item.filename,
+        mime_type: item.mime_type,
+        local_path: item.local_path,
+        bytes: item.local_bytes
+      }))
+    }));
+  }
 
-  const prompt = String(work.content || "");
+  const prompt = appendMaterializedAttachmentsToPrompt(work.content, materializedAttachments);
   const promptPath = path.join(hermesHome, `prompt-${ctx.runId}.txt`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
   await writeFile(promptPath, prompt, { mode: 0o600 });
@@ -462,6 +588,7 @@ if __name__ == "__main__":
     toolsets,
     skillCount: Array.isArray(work.agent?.skills) ? work.agent.skills.length : 0,
     installedSkills: installedSkills.map((skill) => skill.name),
+    attachmentCount: materializedAttachments.length,
     manifestSystemPromptConfigured: Boolean(manifestSystemPrompt.trim()),
     manifestSystemPromptChars: manifestSystemPrompt.length,
     openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
@@ -513,11 +640,11 @@ if __name__ == "__main__":
 
 export async function executeTurn(work, callbackToken) {
   const ctx = turnContext(work, callbackToken);
-  const secrets = [process.env.HARNESS_WORK_B64 || "", callbackToken].filter(Boolean);
+  const secrets = [callbackToken].filter(Boolean);
   try {
     const result = await runHermes(ctx, work, secrets);
     try {
-      await uploadSessionDb(ctx, "/workspace/.hermes");
+      await uploadSessionDb(ctx, executorHermesHome());
     } catch (uploadError) {
       const message = errMsg(uploadError);
       await postJson(ctx, ctx.completePath, { status: "failed", error: `session-db upload failed: ${message}` });

@@ -32,13 +32,18 @@ export function buildWorkPayload({
   };
 }
 
-function executorShellCommand(workB64, callbackToken, extraEnv = {}) {
+function executorShellCommand({ callbackUrl, runId, callbackToken, extraEnv = {} }) {
   const envPairs = [
-    `HARNESS_WORK_B64=${shellQuote(workB64)}`,
     `HARNESS_CALLBACK_TOKEN=${shellQuote(callbackToken)}`,
     ...Object.entries(extraEnv).map(([key, value]) => `${key}=${shellQuote(String(value ?? ""))}`)
   ];
-  return `sh -lc ${shellQuote(`${envPairs.join(" ")} node executor/executor.mjs`)}`;
+  const args = [
+    "node",
+    "executor/executor.mjs",
+    shellQuote(callbackUrl),
+    shellQuote(runId)
+  ].join(" ");
+  return `sh -lc ${shellQuote(`${envPairs.join(" ")} ${args}`)}`;
 }
 
 export async function triggerTruefoundryJob({
@@ -60,8 +65,9 @@ export async function triggerTruefoundryJob({
   const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
   if (!deploymentId) throw new Error(`active deployment not found for job ${executorName}`);
 
-  const workB64 = Buffer.from(JSON.stringify(work), "utf8").toString("base64");
-  const command = executorShellCommand(workB64, callbackToken);
+  const callbackUrl = String(work?.callback_url || "").trim();
+  if (!callbackUrl) throw new Error("work.callback_url is required to dispatch the executor job");
+  const command = executorShellCommand({ callbackUrl, runId: run.id, callbackToken });
 
   const res = await fetchImpl(`${tfyHost}/api/svc/v1/jobs/trigger`, {
     method: "POST",
