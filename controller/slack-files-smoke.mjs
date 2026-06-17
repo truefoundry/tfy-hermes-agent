@@ -163,7 +163,7 @@ async function main() {
   assert.match(decoded.content, /save this booth photo to KubeCon notes/);
   assert.match(decoded.content, /booth\.jpg/);
   assert.match(decoded.content, /notes\.pdf/);
-  assert.match(decoded.content, /authorization for download_url: Bearer \$\{TFY_API_KEY\}/);
+  assert.match(decoded.content, /download_url_auth: signed URL; do not add Authorization header/);
   assert.equal(decoded.slack.user_id, "U01234567");
 
   // Executor reads work.content into prompt-<run_id>.txt — mirror that step.

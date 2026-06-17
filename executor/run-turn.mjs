@@ -102,10 +102,9 @@ function isImageAttachment(attachment) {
   return IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
 }
 
-async function downloadAttachment({ attachment, targetPath, tfyApiKey, maxBytes, fetchImpl = fetch }) {
+async function downloadAttachment({ attachment, targetPath, maxBytes, fetchImpl = fetch }) {
   if (!attachment?.download_url) throw new Error(`attachment ${attachment?.filename || targetPath} is missing download_url`);
-  const headers = tfyApiKey ? { authorization: `Bearer ${tfyApiKey}` } : {};
-  const res = await fetchImpl(attachment.download_url, { headers });
+  const res = await fetchImpl(attachment.download_url);
   const textForError = async () => {
     try { return (await res.text()).slice(0, 300); } catch { return ""; }
   };
@@ -130,7 +129,6 @@ async function downloadAttachment({ attachment, targetPath, tfyApiKey, maxBytes,
 export async function materializeAttachments({
   work,
   workspaceRoot,
-  tfyApiKey,
   fetchImpl = fetch,
   maxFiles = DEFAULT_MAX_ATTACHMENTS,
   maxBytes = DEFAULT_MAX_ATTACHMENT_BYTES
@@ -152,7 +150,6 @@ export async function materializeAttachments({
     const bytes = await downloadAttachment({
       attachment,
       targetPath: localPath,
-      tfyApiKey,
       maxBytes,
       fetchImpl
     });
@@ -529,8 +526,7 @@ async function runHermes(ctx, work, secrets) {
   const installedSkills = await installAgentSkills(ctx, env, work.agent?.skills);
   const materializedAttachments = await materializeAttachments({
     work,
-    workspaceRoot,
-    tfyApiKey: env.TFY_API_KEY
+    workspaceRoot
   });
   if (materializedAttachments.length) {
     env.HERMES_ATTACHMENTS_DIR = path.dirname(materializedAttachments[0].local_path);

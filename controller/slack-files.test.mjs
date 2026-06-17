@@ -65,7 +65,7 @@ test("slackPrompt includes text and attachments together", () => {
   assert.match(prompt, /File attachments \(uploaded to TrueFoundry Artifacts\):/);
   assert.match(prompt, /artifact_fqn: artifact:tenant\/repo\/slack-run:1/);
   assert.match(prompt, /download_url: https:\/\/signed.example\/photo.jpg/);
-  assert.match(prompt, /authorization for download_url: Bearer \$\{TFY_API_KEY\}/);
+  assert.match(prompt, /download_url_auth: signed URL; do not add Authorization header/);
   assert.match(prompt, /Slack user: U1/);
 });
 

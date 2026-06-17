@@ -131,7 +131,7 @@ function formatAttachmentBlock(attachment) {
     attachment.artifact_fqn ? `  artifact_fqn: ${attachment.artifact_fqn}` : null,
     attachment.artifact_path ? `  artifact_path: ${attachment.artifact_path}` : null,
     attachment.download_url ? `  download_url: ${attachment.download_url}` : null,
-    "  authorization for download_url: Bearer ${TFY_API_KEY}"
+    attachment.download_url ? "  download_url_auth: signed URL; do not add Authorization header" : null
   ].filter(Boolean);
   return lines.join("\n");
 }

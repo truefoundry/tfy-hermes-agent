@@ -191,9 +191,9 @@ console.log(JSON.stringify({
     assert.equal(exitCode, 0, stderr || stdout);
     assert.ok(requests.some((request) => request.method === "GET" && request.path === `/api/internal/runs/${runId}/work`));
     const artifactRequest = requests.find((request) => request.method === "GET" && request.path === "/artifact/input.txt");
-    assert.equal(artifactRequest?.authorization, `Bearer ${tfyApiKey}`);
+    assert.equal(artifactRequest?.authorization || undefined, undefined);
     const imageRequest = requests.find((request) => request.method === "GET" && request.path === "/artifact/image.png");
-    assert.equal(imageRequest?.authorization, `Bearer ${tfyApiKey}`);
+    assert.equal(imageRequest?.authorization || undefined, undefined);
     assert.ok(completes.length, "executor did not report completion");
     assert.equal(completes.at(-1).status, "completed");
     const result = JSON.parse(completes.at(-1).result);
@@ -204,7 +204,7 @@ console.log(JSON.stringify({
 
     console.log(JSON.stringify({
       exit_code: exitCode,
-      downloaded_artifact_with_tfy_bearer: artifactRequest?.authorization === `Bearer ${tfyApiKey}` && imageRequest?.authorization === `Bearer ${tfyApiKey}`,
+      downloaded_signed_artifact_without_bearer: !artifactRequest?.authorization && !imageRequest?.authorization,
       hermes_result: result,
       requested_paths: requests.map((request) => `${request.method} ${request.path}`)
     }, null, 2));
