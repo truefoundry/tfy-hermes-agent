@@ -1086,7 +1086,9 @@ async function runDeploy(file, flags) {
     skipLiveChecks: Boolean(flags["skip-live-checks"])
   });
 
-  const items = planManifests(config, { includeSecrets: Boolean(flags.update) });
+  // SecretGroup state is handled by ensureSecretGroup above. Keeping it out of
+  // deployment files avoids applying incomplete scaffold manifests on update.
+  const items = planManifests(config, { includeSecrets: false });
 
   await emitManifestsToDir(items, deploymentsDir);
   console.log(`wrote ${items.length} manifest files to ${path.relative(process.cwd(), deploymentsDir) || deploymentsDir}`);

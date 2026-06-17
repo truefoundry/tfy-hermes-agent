@@ -1,0 +1,72 @@
+name: hermes-test-agent-controller
+type: service
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+image:
+  type: build
+  build_source:
+    type: git
+    repo_url: https://github.com/truefoundry/tfy-hermes-agent
+    branch_name: 7f72052682efe6e110483908fa2055c0f6572b24
+    ref: 7f72052682efe6e110483908fa2055c0f6572b24
+  build_spec:
+    type: dockerfile
+    dockerfile_path: Dockerfile.controller
+    build_context_path: .
+resources:
+  cpu_request: 0.25
+  cpu_limit: 1
+  memory_request: 512
+  memory_limit: 1024
+  ephemeral_storage_request: 2000
+  ephemeral_storage_limit: 4000
+replicas: 1
+env:
+  STATE_ROOT: /data
+  PUBLIC_BASE_URL: https://hermes-test-agent-sai-ws.ml.tfy-eo.truefoundry.cloud
+  TFY_HOST: https://tfy-eo.truefoundry.cloud
+  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_RUN_TOKEN_SECRET: tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-RUN-TOKEN-SECRET
+  SLACK_BOT_TOKEN: tfy-secret://tfy-eo:hermes-test-agent-secrets:SLACK-BOT-TOKEN
+  SLACK_SIGNING_SECRET: tfy-secret://tfy-eo:hermes-test-agent-secrets:SLACK-SIGNING-SECRET
+  TFY_WORKSPACE_FQN: tfy-ea-dev-eo-az:sai-ws
+  HERMES_AGENT_HANDLE: hermes-test-agent
+  HERMES_AGENT_NAME: hermes-test-agent
+  HERMES_AGENT_DESCRIPTION: Reusable Hermes test agent for validating Slack and API features on tfy-eo.
+  HERMES_AGENT_INSTRUCTIONS: |-
+    You are the reusable TrueFoundry Hermes test agent.
+    Keep responses concise and operational.
+    When a request is part of feature testing, state the surface being exercised and the evidence returned by the runtime.
+  HERMES_AGENT_SKILLS: ""
+  HERMES_AGENT_MCP_SERVERS: ""
+  HERMES_SLACK_ALLOWED_CHANNELS: ""
+  HERMES_SLACK_ALLOWED_USERS: ""
+  HERMES_SLACK_TEAM_ID: ""
+  HERMES_MODEL: openai-main/gpt-5.5
+  HERMES_EXECUTOR_BACKEND: truefoundry-job
+  HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
+  HERMES_EXECUTOR_NAME: hermes-test-agent-executor
+ports:
+  - port: 8787
+    protocol: TCP
+    expose: true
+    host: hermes-test-agent-sai-ws.ml.tfy-eo.truefoundry.cloud
+    app_protocol: http
+mounts:
+  - type: volume
+    mount_path: /data
+    volume_fqn: tfy-volume://tfy-ea-dev-eo-az:sai-ws:hermes-test-agent-data
+liveness_probe: &a1
+  config:
+    type: http
+    path: /api/health
+    port: 8787
+    scheme: HTTP
+  initial_delay_seconds: 20
+  period_seconds: 15
+  timeout_seconds: 5
+  failure_threshold: 5
+readiness_probe: *a1
+rollout_strategy:
+  type: rolling_update
+  max_surge_percentage: 0
+  max_unavailable_percentage: 100

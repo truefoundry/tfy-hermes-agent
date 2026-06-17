@@ -1,0 +1,9 @@
+name: hermes-test-agent-data
+type: volume
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+config:
+  type: dynamic
+  size: 10
+  storage_class: default
+  access_modes:
+    - ReadWriteOnce

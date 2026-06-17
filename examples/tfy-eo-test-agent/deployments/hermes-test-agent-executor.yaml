@@ -1,0 +1,35 @@
+name: hermes-test-agent-executor
+type: job
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+trigger:
+  type: manual
+concurrency_limit: 20
+retries: 0
+image:
+  type: build
+  build_source:
+    type: git
+    repo_url: https://github.com/truefoundry/tfy-hermes-agent
+    branch_name: 7f72052682efe6e110483908fa2055c0f6572b24
+    ref: 7f72052682efe6e110483908fa2055c0f6572b24
+  build_spec:
+    type: dockerfile
+    dockerfile_path: Dockerfile.executor
+    build_context_path: .
+    command: node executor/executor.mjs
+resources:
+  cpu_request: 0.1
+  cpu_limit: 2
+  memory_request: 2048
+  memory_limit: 4096
+  ephemeral_storage_request: 8000
+  ephemeral_storage_limit: 16000
+env:
+  HOME: /workspace
+  HERMES_HOME: /workspace/.hermes
+  HARNESS_TURN_TIMEOUT_MS: "3600000"
+  TFY_HOST: https://tfy-eo.truefoundry.cloud
+  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  OPENAI_BASE_URL: https://gateway.truefoundry.ai
+  OPENAI_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_MODEL: openai-main/gpt-5.5

@@ -27,6 +27,7 @@
     "executor/run-turn.mjs",
     "executor/server.mjs",
     "executor/tokens.mjs",
+    "examples/",
     "skills/"
   ],
   "scripts": {

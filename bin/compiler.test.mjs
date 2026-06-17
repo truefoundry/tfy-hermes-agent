@@ -365,3 +365,40 @@ test("readHermesConfig validates and normalizes the example agent config", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("checked-in tfy-eo test agent example stays deployable", async () => {
+  const exampleConfig = fileURLToPath(new URL("../examples/tfy-eo-test-agent/hermes-test-agent.yaml", import.meta.url));
+  const deploymentsDir = fileURLToPath(new URL("../examples/tfy-eo-test-agent/deployments/", import.meta.url));
+  const slackManifestPath = fileURLToPath(new URL("../examples/tfy-eo-test-agent/slack-app-manifest.json", import.meta.url));
+
+  const parsed = await readHermesConfig(exampleConfig);
+  assert.equal(parsed.name, "hermes-test-agent");
+  assert.equal(parsed.workspaceFqn, "tfy-ea-dev-eo-az:sai-ws");
+  assert.equal(parsed.tenant, "tfy-eo");
+  assert.equal(parsed.host.url, "https://hermes-test-agent-sai-ws.ml.tfy-eo.truefoundry.cloud");
+  assert.equal(parsed.gatewayUrl, "https://gateway.truefoundry.ai");
+  assert.equal(parsed.model, "openai-main/gpt-5.5");
+  assert.equal(parsed.secrets, "hermes-test-agent-secrets");
+  assert.equal(parsed.executor.backend, "truefoundry-job");
+
+  const planned = planManifests(parsed, { includeSecrets: false });
+  assert.deepEqual(planned.map((item) => item.filename), [
+    "hermes-test-agent-volume.yaml",
+    "hermes-test-agent-controller.yaml",
+    "hermes-test-agent-executor.yaml"
+  ]);
+
+  const controller = planned.find((item) => item.filename.endsWith("-controller.yaml")).manifest;
+  assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY");
+  assert.equal(controller.env.HERMES_RUN_TOKEN_SECRET, "tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-RUN-TOKEN-SECRET");
+  assert.equal(controller.env.SLACK_BOT_TOKEN, "tfy-secret://tfy-eo:hermes-test-agent-secrets:SLACK-BOT-TOKEN");
+  assert.equal(controller.env.SLACK_SIGNING_SECRET, "tfy-secret://tfy-eo:hermes-test-agent-secrets:SLACK-SIGNING-SECRET");
+
+  for (const item of planned) {
+    const generated = YAML.parse(await readFile(path.join(deploymentsDir, item.filename), "utf8"));
+    assert.deepEqual(generated, item.manifest);
+  }
+
+  const generatedSlackManifest = JSON.parse(await readFile(slackManifestPath, "utf8"));
+  assert.deepEqual(generatedSlackManifest, slackManifest(parsed));
+});
