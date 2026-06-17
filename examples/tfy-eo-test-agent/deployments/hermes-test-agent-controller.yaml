@@ -45,6 +45,7 @@ env:
   HERMES_EXECUTOR_BACKEND: truefoundry-job
   HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
   HERMES_EXECUTOR_NAME: hermes-test-agent-executor
+  HERMES_SLACK_INBOUND_ARTIFACT_REPO: sai-mlrepo
 ports:
   - port: 8787
     protocol: TCP

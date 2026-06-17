@@ -10,3 +10,4 @@ instructions: |
 model: openai-main/gpt-5.5
 gateway_url: https://gateway.truefoundry.ai
 secrets: hermes-test-agent-secrets
+slack_inbound_artifact_repo: sai-mlrepo
