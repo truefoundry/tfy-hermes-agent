@@ -110,9 +110,9 @@ agents/<name>/
 └── deployments/                # compiled TF manifests (written by deploy)
 ```
 
-The wizard asks required fields first, then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from the yaml. The `secrets` field is only a name — `deploy` creates the SecretGroup via API.
+The wizard asks required fields first, then executor backend (`truefoundry-job` default or `truefoundry-service` + Daytona), then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from the yaml. Job mode omits `executor` from the yaml; service mode writes `executor` and `terminal`. The `secrets` field is only a name — `deploy` creates the SecretGroup via API.
 
-Or copy `agents/devrel-assistant/devrel-assistant.yaml` from this package and edit it. See [agent config fields](#agent-config-fields) below.
+Or write the yaml by hand using the [agent config fields](#agent-config-fields) below.
 
 ### 3. Slack app (skip if API-only)
 
@@ -133,17 +133,19 @@ Only needed if you want Slack. Socket Mode is not supported.
 - Sets `HERMES-RUN-TOKEN-SECRET` from `agents/<name>/.hermes-secrets.local` (or generates one)
 - Sets `TFY-API-KEY` from `~/.truefoundry/credentials.json` or shell `TFY_API_KEY`
 
-For Slack, the **only** manual secret step is pasting `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
+For Slack, paste `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
+
+For `executor: truefoundry-service`, also set `DAYTONA-API-KEY` in the SecretGroup before tool-using turns.
 
 Manual SecretGroup creation is only needed if `deploy` cannot discover a secret-store integration in your tenant.
 
 Preview manifests without applying:
 
 ```bash
-tfy-hermes-agent deploy devrel-assistant --skip-live-checks
+tfy-hermes-agent deploy <name> --skip-live-checks
 ```
 
-This compiles into `agents/devrel-assistant/deployments/`:
+This compiles into `agents/<name>/deployments/`:
 
 | File | Resource | What it is |
 |---|---|---|
@@ -156,8 +158,8 @@ SecretGroup is **not** a deployments file — `deploy` provisions it via API bef
 Apply to TrueFoundry (reads `~/.truefoundry/credentials.json` from `tfy login` if env vars are unset; otherwise asks you to log in):
 
 ```bash
-tfy-hermes-agent deploy devrel-assistant
-# or: tfy-hermes-agent deploy agents/devrel-assistant/devrel-assistant.yaml
+tfy-hermes-agent deploy <name>
+# or: tfy-hermes-agent deploy agents/<name>/<name>.yaml
 ```
 
 `deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order (volume → controller → executor).
@@ -169,20 +171,6 @@ Flags:
 - `--skip-live-checks` — compile only; does not apply or provision secrets.
 
 After a git-source image change, rebuild with `tfy deploy --force -f agents/<name>/deployments/<name>-controller.yaml` (and executor) — not plain `tfy apply`.
-
-### Local E2E (docker compose)
-
-Self-contained stack: controller + executor Service + mock LLM gateway. No TF job dispatch, no real gateway, no Slack.
-
-```bash
-cp .env.local.example .env.local
-npm run local:e2e          # up → smoke → down
-npm run local:up           # build + start (first run builds executor image)
-npm run local:smoke        # POST /v1/responses, assert completed turn
-npm run local:down
-```
-
-Uses `truefoundry-service` dispatch inside the compose network. For `truefoundry-job`, test on a TF dev workspace instead.
 
 For Slack deployments, after deploy confirm **Event Subscriptions** and **Interactivity** URLs match your controller host:
 
@@ -245,8 +233,8 @@ mcp_servers:
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
-| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. Job = per-turn TF Job; Service = long-lived executor with Daytona tool sandbox. |
-| `terminal` | no | Only for `truefoundry-service`. Defaults to `daytona`. Not allowed for `truefoundry-job`. |
+| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. `init` prompts; job default omitted from yaml. |
+| `terminal` | no | Only for `truefoundry-service`. Defaults to `daytona`. `init` writes when service is chosen. |
 
 ---
 
@@ -269,3 +257,4 @@ Then say **"create a Hermes Slack agent"**.
 | `/slack/*` (webhooks) | `X-Slack-Signature` HMAC | Verified with SecretGroup `SLACK-SIGNING-SECRET` |
 | Slack outbound messages | Bot token | SecretGroup `SLACK-BOT-TOKEN` |
 | LLM calls (executor) | Gateway bearer | SecretGroup `TFY-API-KEY` via `OPENAI_API_KEY` |
+| Daytona tool sandbox | API key | SecretGroup `DAYTONA-API-KEY` (only when `executor: truefoundry-service`) |

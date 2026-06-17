@@ -99,9 +99,9 @@ tfy-hermes-agent init
 
 Creates `agents/<name>/` with `<name>.yaml`, `slack-app-manifest.json` (unless `--api-only`), `.hermes-secrets.local`, and `deployments/`.
 
-**Wizard prompts:** required fields (`name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` name), then optional (`version`, `host`, `instructions`, `skills`, `mcp_servers`, and Slack allowlists — blank skips, omitted from yaml). `--api-only` skips Slack file and Slack optional prompts.
+**Wizard prompts:** required fields (`name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` name), then executor backend (`truefoundry-job` default or `truefoundry-service` + Daytona), then optional (`version`, `host`, `instructions`, `skills`, `mcp_servers`, and Slack allowlists — blank skips, omitted from yaml). `--api-only` skips Slack file and Slack optional prompts. Service mode needs `DAYTONA-API-KEY` in the SecretGroup after deploy.
 
-Or copy `agents/devrel-assistant/devrel-assistant.yaml` from the package into `agents/<name>/` and edit.
+Or write `agents/<name>/<name>.yaml` by hand (see field reference below).
 
 ### 3. Slack app (skip if API-only)
 
@@ -118,14 +118,14 @@ No separate SecretGroup step. `deploy` auto-creates the group via API, sets `HER
 Preview (compile only):
 
 ```bash
-tfy-hermes-agent deploy devrel-assistant --skip-live-checks
+tfy-hermes-agent deploy <name> --skip-live-checks
 ```
 
 Apply:
 
 ```bash
-tfy-hermes-agent deploy devrel-assistant
-# or: tfy-hermes-agent deploy agents/devrel-assistant/devrel-assistant.yaml
+tfy-hermes-agent deploy <name>
+# or: tfy-hermes-agent deploy agents/<name>/<name>.yaml
 ```
 
 `deploy` compiles to `agents/<name>/deployments/`, then applies with `tfy apply -f` in order:
@@ -212,6 +212,8 @@ mcp_servers:
 | `slack_team_id` | no | Pin Slack workspace; `init` prompts |
 | `skills` | no | Version-pinned `agent-skill:…:N` FQNs; `init` prompts |
 | `mcp_servers` | no | MCP Gateway URLs; `init` prompts |
+| `executor` | no | `init` prompts: `truefoundry-job` (default; omit field) or `truefoundry-service` |
+| `terminal` | no | Written by `init` for service mode: `backend: daytona` |
 
 ## Auto-provisioned secrets
 
@@ -223,6 +225,7 @@ No standalone SecretGroup step. `deploy` runs `ensureSecretGroup` via API first:
 | `HERMES-RUN-TOKEN-SECRET` | `deploy` from `agents/<name>/.hermes-secrets.local` or generated |
 | `SLACK-BOT-TOKEN` | User after deploy (from Slack app) — placeholders until then |
 | `SLACK-SIGNING-SECRET` | User after deploy (from Slack app) — placeholders until then |
+| `DAYTONA-API-KEY` | User after deploy when `executor: truefoundry-service` — placeholder until then |
 
 Hyphens only in secret key names.
 

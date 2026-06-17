@@ -68,6 +68,21 @@ export function normalizeExecutorConfig(value) {
   return { backend: normalizeExecutorBackend(raw) };
 }
 
+export const INIT_EXECUTOR_CHOICES = [
+  { key: "1", value: "truefoundry-job", label: "truefoundry-job — per-turn TF Job (default)" },
+  { key: "2", value: "truefoundry-service", label: "truefoundry-service — long-lived Service + Daytona tool sandbox" }
+];
+
+export function initExecutorYamlFields(executorInput) {
+  const { backend } = normalizeExecutorConfig(executorInput);
+  if (backend === "truefoundry-job") return {};
+  const terminal = normalizeTerminalConfig(backend, undefined);
+  return {
+    executor: backend,
+    terminal: { backend: terminal.backend }
+  };
+}
+
 export function normalizeTerminalConfig(executorBackend, value) {
   if (executorBackend === "truefoundry-job") {
     if (value != null) {
@@ -125,6 +140,7 @@ const USAGE = [
   "  tfy-hermes-agent deploy <name> | agents/<name>/<name>.yaml [--update] [--emit-manifests <dir>] [--skip-live-checks]",
   "",
   "init creates agents/<name>/ with <name>.yaml, .hermes-secrets.local, and slack-app-manifest.json (unless --api-only).",
+  "init prompts for executor backend (truefoundry-job default or truefoundry-service + Daytona) after required fields.",
   "init --api-only skips Slack file output and Slack optional prompts.",
   "deploy auto-creates the SecretGroup via API, compiles manifests to agents/<name>/deployments/, then tfy apply -f each file.",
   "deploy validates the config unless --skip-live-checks (compile-only preview).",
@@ -899,6 +915,22 @@ async function promptMultiline(rl, label) {
   return lines.join("\n").trim();
 }
 
+async function promptExecutorBackend(rl) {
+  const byKey = new Map(INIT_EXECUTOR_CHOICES.map((choice) => [choice.key, choice.value]));
+  while (true) {
+    console.log("\nExecutor backend:");
+    for (const choice of INIT_EXECUTOR_CHOICES) console.log(`  ${choice.key}. ${choice.label}`);
+    const raw = (await rl.question("Choice [1]: ")).trim();
+    const pick = raw || "1";
+    if (byKey.has(pick)) return byKey.get(pick);
+    try {
+      return normalizeExecutorBackend(pick);
+    } catch (error) {
+      console.error(`  ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 const SLACK_APPS_URL = "https://api.slack.com/apps";
 
 async function runInit(flags = {}) {
@@ -930,6 +962,12 @@ async function runInit(flags = {}) {
         return value;
       }
     });
+
+    const executorBackend = await promptExecutorBackend(rl);
+    if (executorBackend === "truefoundry-service") {
+      console.log("  Service mode uses Daytona for Hermes tool sandbox.");
+      console.log("  After deploy, set DAYTONA-API-KEY in the SecretGroup (never paste it here).");
+    }
 
     console.log("\nOptional fields (press Enter to skip each):\n");
     const version = await prompt(rl, "Git ref for controller/executor image build", { def: DEFAULT_SOURCE_REF });
@@ -971,6 +1009,7 @@ async function runInit(flags = {}) {
     }
     if (skills.length) hermesDoc.skills = skills;
     if (mcpServers.length) hermesDoc.mcp_servers = mcpServers;
+    Object.assign(hermesDoc, initExecutorYamlFields(executorBackend));
 
     await mkdir(paths.deployments, { recursive: true });
     await writeFile(paths.config, YAML.stringify(hermesDoc, { lineWidth: 0 }));
@@ -1004,6 +1043,9 @@ async function runInit(flags = {}) {
       console.log("     (or: tfy-hermes-agent deploy " + deployArg + ")");
       console.log("     No manual secret steps — deploy creates the SecretGroup and sets");
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY from credentials.json automatically.");
+      if (executorBackend === "truefoundry-service") {
+        console.log("     Also set DAYTONA-API-KEY in the SecretGroup for tool sandbox turns.");
+      }
       console.log("  2. Call /v1/chat/completions on the controller host to verify.");
     } else {
       console.log(`  1. Install the Slack app at ${SLACK_APPS_URL}`);
@@ -1012,6 +1054,9 @@ async function runInit(flags = {}) {
       console.log(`  2. Run: tfy-hermes-agent deploy ${handle}`);
       console.log("     (or: tfy-hermes-agent deploy " + deployArg + ")");
       console.log("     HERMES-RUN-TOKEN-SECRET and TFY-API-KEY are set automatically — no manual step.");
+      if (executorBackend === "truefoundry-service") {
+        console.log("     Also set DAYTONA-API-KEY in the SecretGroup for tool sandbox turns.");
+      }
       console.log("     Then paste your Slack tokens into SLACK-BOT-TOKEN and SLACK-SIGNING-SECRET");
       console.log("     in the SecretGroup (the only secrets you enter by hand).");
       console.log("  3. Confirm Slack Event Subscriptions and Interactivity URLs match your controller host.");
@@ -1059,6 +1104,9 @@ async function runDeploy(file, flags) {
   console.log(`Controller: ${config.host.url}`);
   console.log(`Slack Events URL: ${config.host.url}/slack/events`);
   console.log(`Slack Interactions URL: ${config.host.url}/slack/interactions`);
+  if (config.executor.backend === "truefoundry-service") {
+    console.log("Set DAYTONA-API-KEY in the SecretGroup before tool-using turns.");
+  }
 }
 
 async function main() {

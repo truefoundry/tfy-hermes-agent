@@ -10,7 +10,7 @@ Keep the conversation moving one missing input or one manual task at a time.
 
 ## Core Contract
 
-- **Source of truth:** `agents/<name>/<name>.yaml` (created by `init` or copied from `agents/devrel-assistant/devrel-assistant.yaml` in the package).
+- **Source of truth:** `agents/<name>/<name>.yaml` in the user's project (created by `init` or written by hand).
 - **Distribution:** GitHub only — not on the npm registry. Install with `npm install github:truefoundry/tfy-hermes-agent`.
 - **Two CLIs required:** **tfy** (`pip install -U "truefoundry"`) applies manifests; **tfy-hermes-agent** compiles them and orchestrates `tfy apply -f`.
 - **On-disk layout** (per agent):
@@ -80,10 +80,20 @@ Creates `agents/<name>/` with `<name>.yaml`, `slack-app-manifest.json` (unless `
 
 Required: `name`, `description`, `model`, `workspace_fqn`, `gateway_url`, `secrets` (SecretGroup name only — `deploy` creates it via API).
 
+Then **executor backend** (wizard prompts after required fields; default `truefoundry-job`):
+
+| Choice | Yaml | When to pick |
+|---|---|---|
+| **Job (default)** | omit `executor`, or `executor: truefoundry-job` | Per-turn TF Job. Hermes tools run in the job container. No Daytona secret. |
+| **Service + Daytona** | `executor: truefoundry-service` and `terminal: { backend: daytona }` | Long-lived executor Service; tool sandbox in Daytona. Needs `DAYTONA-API-KEY` in SecretGroup after deploy. |
+
+If the yaml was not created via `init` and `executor` is unset, ask before deploy unless the user already chose in this session.
+
 Then optional (Enter to skip each; omitted from the yaml when blank):
 
 | Field | Wizard prompt |
 |---|---|
+| `executor` | Job vs Service + Daytona (default job; service writes `executor` + `terminal` to yaml) |
 | `version` | Git ref for image build (default `main`, omitted if unchanged) |
 | `host` | Public controller URL |
 | `instructions` | Multiline system prompt |
@@ -93,7 +103,7 @@ Then optional (Enter to skip each; omitted from the yaml when blank):
 | `slack.allowed_channels` | Comma-separated channel IDs — skipped with `--api-only` |
 | `slack.allowed_users` | Comma-separated user IDs — skipped with `--api-only` |
 
-Or copy `agents/devrel-assistant/devrel-assistant.yaml` from the package into a new `agents/<name>/` folder and edit in place.
+Or write `agents/<name>/<name>.yaml` by hand using **Input Rules** below and `references/deployment-example.md`.
 
 If it already exists, collect any missing fields and edit `agents/<name>/<name>.yaml` in place. See **Input Rules** below and `references/deployment-example.md`.
 
@@ -202,6 +212,7 @@ Resource references:
 Secrets:
 
 - `ensureSecretGroup` runs inside `deploy` via API — creates the SecretGroup when missing, sets `HERMES-RUN-TOKEN-SECRET` and `TFY-API-KEY` automatically. All four keys must exist before manifests apply (Slack keys start as placeholders; user pastes real tokens after deploy if Slack is in scope).
+- For `executor: truefoundry-service`, `DAYTONA-API-KEY` must also be set in the SecretGroup before tool-using turns work. Remind the user after deploy if they chose service mode.
 
 ## Input Rules
 
@@ -221,8 +232,8 @@ Secrets:
 | `slack_team_id` | no | Slack team id if pinning a workspace. |
 | `skills` | no | Version-pinned FQNs, e.g. `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs only. |
-| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. |
-| `terminal` | no | Only for `truefoundry-service`; defaults to `daytona`. |
+| `executor` | no | `truefoundry-job` (default, per-turn Job) or `truefoundry-service` (Service + Daytona). `init` prompts; omit yaml field for job default. |
+| `terminal` | no | Only for `truefoundry-service`; defaults to `daytona`. `init` writes this when service is chosen. |
 
 If the user gives names instead of FQNs, URLs, or Slack IDs, pause and ask for exact values or offer to look them up when tooling is available. Prefer `tfy-hermes-agent init` when starting from scratch — it prompts every optional field.
 
@@ -245,10 +256,11 @@ Only stop for external work:
 - Manual SecretGroup creation only when `deploy` cannot discover a secret-store integration
 - Slack app at https://api.slack.com/apps (skip if API-only) — before deploy; manifest at `agents/<name>/slack-app-manifest.json`
 - Slack token entry in SecretGroup UI after deploy (never in chat; only manual secret step)
+- `DAYTONA-API-KEY` in SecretGroup when `executor: truefoundry-service` (never in chat)
 - Slack URL verification in Slack settings (skip if API-only)
 - First real Slack message result (skip if API-only)
 
-When stopping, give exactly one concrete task and the file/path/name the user needs (e.g. `agents/devrel-assistant/slack-app-manifest.json`, not a generic filename).
+When stopping, give exactly one concrete task and the file/path/name the user needs (e.g. `agents/my-bot/slack-app-manifest.json`, not a generic filename).
 
 ## Completion Criteria
 

@@ -23,6 +23,7 @@ import {
   normalizeExecutorConfig,
   normalizeExecutorBackend,
   normalizeTerminalConfig,
+  initExecutorYamlFields,
   daytonaPlatformEnv,
   DEFAULT_HERMES_DAYTONA_SNAPSHOT,
   DEFAULT_DAYTONA_AUTO_STOP_MINUTES,
@@ -134,6 +135,15 @@ test("normalizeExecutorConfig rejects extra keys and unknown backends", () => {
   );
   assert.throws(() => normalizeExecutorConfig("kubernetes"), /executor must be truefoundry-job or truefoundry-service/);
   assert.throws(() => normalizeExecutorConfig("daytona"), /executor daytona is not supported/);
+});
+
+test("initExecutorYamlFields omits executor for job default and writes service + terminal for service mode", () => {
+  assert.deepEqual(initExecutorYamlFields("truefoundry-job"), {});
+  assert.deepEqual(initExecutorYamlFields(undefined), {});
+  assert.deepEqual(initExecutorYamlFields("truefoundry-service"), {
+    executor: "truefoundry-service",
+    terminal: { backend: "daytona" }
+  });
 });
 
 test("normalizeTerminalConfig enforces truefoundry-service and daytona-only backend", () => {

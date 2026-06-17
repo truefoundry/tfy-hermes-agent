@@ -23,7 +23,6 @@
     "controller/sse.mjs",
     "controller/tokens.mjs",
     "controller/util.mjs",
-    "agents/devrel-assistant/devrel-assistant.yaml",
     "executor/executor.mjs",
     "executor/run-turn.mjs",
     "executor/server.mjs",
@@ -34,12 +33,7 @@
     "start": "node controller/controller.mjs",
     "executor": "node executor/executor.mjs",
     "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs controller/session-continuity.test.mjs controller/slack-files.test.mjs controller/dispatch.test.mjs",
-    "check": "node --check controller/controller.mjs && node --check controller/dispatch.mjs && node --check controller/util.mjs && node --check executor/executor.mjs && node --check executor/run-turn.mjs && node --check executor/server.mjs && node --check executor/tokens.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && node --check controller/slack-files.test.mjs && node --check controller/dispatch.test.mjs && node --check controller/artifacts.mjs && node --check controller/slack-ingest.mjs && node --check scripts/mock-gateway.mjs && node --check scripts/local-smoke.mjs && npm test",
-    "local:up": "docker compose -f docker-compose.local.yml --env-file .env.local up --build -d",
-    "local:down": "docker compose -f docker-compose.local.yml --env-file .env.local down -v",
-    "local:logs": "docker compose -f docker-compose.local.yml --env-file .env.local logs -f controller executor",
-    "local:smoke": "node scripts/local-smoke.mjs",
-    "local:e2e": "npm run local:up && npm run local:smoke && npm run local:down"
+    "check": "node --check controller/controller.mjs && node --check controller/dispatch.mjs && node --check controller/util.mjs && node --check executor/executor.mjs && node --check executor/run-turn.mjs && node --check executor/server.mjs && node --check executor/tokens.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && node --check controller/slack-files.test.mjs && node --check controller/dispatch.test.mjs && node --check controller/artifacts.mjs && node --check controller/slack-ingest.mjs && npm test"
   },
   "engines": {
     "node": ">=22"

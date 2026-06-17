@@ -8,7 +8,7 @@ A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://gith
 
 - `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run executor callbacks. Owns the only persistent state (SQLite on a controller-only PVC).
 - `executor/executor.mjs` — turn runner for `truefoundry-job` (TF Job entrypoint). `executor/server.mjs` — internal HTTP service for `truefoundry-service`. Both decode a signed payload, shuttle the session DB, run Hermes, post results back.
-- `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard with optional fields, `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).
+- `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard: required fields, executor backend, optional fields; `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
 
 **Executor modes** (agent yaml `executor`, default `truefoundry-job`):
@@ -47,8 +47,7 @@ CLI auth: `deploy` reads `~/.truefoundry/credentials.json` from `tfy login` (`ho
 
 - **Run tests:** `npm run check` (syntax checks + unit tests, ~1s).
 - **Build images locally:** `docker build -f Dockerfile.controller -t hermes-controller:local .` and `docker build -f Dockerfile.executor -t hermes-executor:local .`. Both build clean on Apple Silicon and linux/amd64; if a remote build fails and a local build passes, the platform's build farm is the suspect (start by trying the commit SHA in `version:` instead of a branch name with slashes — TF's git puller has issues with branch names containing `/`).
-- **Local E2E:** `cp .env.local.example .env.local && npm run local:e2e` (compose + mock gateway + `/v1/responses` smoke).
-- **Emit manifests without applying:** `tfy-hermes-agent deploy devrel-assistant --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
+- **Emit manifests without applying:** run `init`, then `tfy-hermes-agent deploy <name> --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
 - **Force a controller restart without a rebuild** (to pick up new SecretGroup values): re-`tfy apply -f <controller-manifest>` with the same file. Rolling restart, ~30s, no build.
 
 ## Lessons learned the hard way (so far)
