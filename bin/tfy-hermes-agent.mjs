@@ -449,7 +449,8 @@ export function controllerManifest(config) {
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_SLACK_TEAM_ID: config.slackTeamId,
       HERMES_MODEL: config.model,
-      HERMES_EXECUTOR_BACKEND: config.executor.backend
+      HERMES_EXECUTOR_BACKEND: config.executor.backend,
+      HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
   };
   if (config.executor.backend === "truefoundry-job") {
     env.HERMES_EXECUTOR_NAME = r.executor;
@@ -484,7 +485,7 @@ function executorEnv(config) {
   const env = {
     HOME: "/workspace",
     HERMES_HOME: "/workspace/.hermes",
-    HARNESS_TURN_TIMEOUT_MS: "600000",
+    HARNESS_TURN_TIMEOUT_MS: "3600000",
     TFY_HOST: controlPlaneUrl(config),
     TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
     OPENAI_BASE_URL: config.gatewayUrl,

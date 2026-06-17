@@ -395,7 +395,7 @@ async function runHermes(ctx, work, secrets) {
   env.HARNESS_EVENT_URL = `${ctx.callbackBase}${ctx.eventsPath}`;
   env.HARNESS_CALLBACK_TOKEN = ctx.callbackToken;
 
-  const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 600_000);
+  const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 3_600_000);
   const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
   const sessionDownload = await downloadSessionDb(ctx, hermesHome);
   const installedSkills = await installAgentSkills(ctx, env, work.agent?.skills);
