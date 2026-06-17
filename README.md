@@ -179,6 +179,12 @@ For Slack deployments, after deploy confirm **Event Subscriptions** and **Intera
 
 Invite the bot to channels where it should respond.
 
+### Slack file attachments
+
+Slack file messages are accepted through the HTTP Events API. The controller downloads Slack files with the bot token, uploads them to a TrueFoundry Artifact version, and sends artifact read URLs to the executor. The executor downloads those artifacts into its workspace before Hermes starts.
+
+Image attachments are passed to Hermes as image inputs using their local workspace paths. Other file types are made available in the executor workspace and referenced in the prompt with `local_path`.
+
 ### 5. Verify
 
 ```bash

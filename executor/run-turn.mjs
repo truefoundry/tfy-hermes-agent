@@ -10,6 +10,17 @@ import { extract as tarExtract } from "tar";
 const errMsg = (e) => e instanceof Error ? e.message : String(e);
 const DEFAULT_MAX_ATTACHMENTS = 10;
 const DEFAULT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".tiff",
+  ".tif",
+  ".heic"
+]);
 
 function executorWorkspaceRoot(env = process.env) {
   return env.HOME || "/workspace";
@@ -84,6 +95,13 @@ function safeAttachmentFilename(attachment, index) {
   return id && !name.startsWith(`${id}-`) ? `${id}-${name}` : name;
 }
 
+function isImageAttachment(attachment) {
+  const mimeType = String(attachment?.mime_type || "").toLowerCase();
+  if (mimeType.startsWith("image/")) return true;
+  const name = String(attachment?.local_path || attachment?.filename || attachment?.artifact_path || "");
+  return IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
 async function downloadAttachment({ attachment, targetPath, tfyApiKey, maxBytes, fetchImpl = fetch }) {
   if (!attachment?.download_url) throw new Error(`attachment ${attachment?.filename || targetPath} is missing download_url`);
   const headers = tfyApiKey ? { authorization: `Bearer ${tfyApiKey}` } : {};
@@ -141,7 +159,8 @@ export async function materializeAttachments({
     materialized.push({
       ...attachment,
       local_path: localPath,
-      local_bytes: bytes
+      local_bytes: bytes,
+      hermes_input_type: isImageAttachment({ ...attachment, local_path: localPath }) ? "image" : "file"
     });
   }
   return materialized;
@@ -161,6 +180,7 @@ export function appendMaterializedAttachmentsToPrompt(prompt, attachments) {
     String(prompt || "").trimEnd(),
     [
       "Downloaded file attachments are available in the executor workspace.",
+      "Image attachments are also passed to Hermes as image inputs when supported.",
       "Use the local_path values below when the task refers to an attachment:",
       blocks.join("\n")
     ].join("\n")
@@ -528,12 +548,30 @@ async function runHermes(ctx, work, secrets) {
 
   const prompt = appendMaterializedAttachmentsToPrompt(work.content, materializedAttachments);
   const promptPath = path.join(hermesHome, `prompt-${ctx.runId}.txt`);
+  const attachmentsPath = path.join(hermesHome, `attachments-${ctx.runId}.json`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
   await writeFile(promptPath, prompt, { mode: 0o600 });
+  await writeFile(attachmentsPath, JSON.stringify({
+    attachments: materializedAttachments,
+    image_paths: materializedAttachments
+      .filter((attachment) => attachment.hermes_input_type === "image")
+      .map((attachment) => attachment.local_path)
+  }), { mode: 0o600 });
   await writeFile(wrapperPath, String.raw`
+import json
+import logging
 import os, sys
+from contextlib import redirect_stderr, redirect_stdout
+from typing import Optional
 from hermes_cli.config import load_config
 from hermes_cli.oneshot import run_oneshot
+
+try:
+    from hermes_cli.oneshot import _run_agent, _normalize_toolsets, _validate_explicit_toolsets
+except Exception:
+    _run_agent = None
+    _normalize_toolsets = None
+    _validate_explicit_toolsets = None
 
 def _append_manifest_system_prompt():
     prompt = (os.environ.get("HERMES_EPHEMERAL_SYSTEM_PROMPT") or "").strip()
@@ -569,16 +607,96 @@ def _startup():
     except Exception:
         pass
 
+def _load_image_paths(attachments_path):
+    if not attachments_path:
+        return []
+    try:
+        with open(attachments_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+    except Exception:
+        return []
+    paths = payload.get("image_paths") or []
+    return [str(path) for path in paths if path and os.path.isfile(str(path))]
+
+def _run_oneshot_with_images(prompt, image_paths, model: Optional[str] = None, provider: Optional[str] = None, toolsets=None) -> int:
+    if not image_paths:
+        return run_oneshot(prompt, model=model, provider=provider, toolsets=toolsets)
+    if _run_agent is None or _validate_explicit_toolsets is None or _normalize_toolsets is None:
+        return run_oneshot(prompt, model=model, provider=provider, toolsets=toolsets)
+
+    logging.disable(logging.CRITICAL)
+    env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    if provider and not ((model or "").strip() or env_model_early):
+        sys.stderr.write(
+            "hermes image oneshot: --provider requires --model (or HERMES_INFERENCE_MODEL).\n"
+        )
+        return 2
+
+    explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
+    if toolsets_error:
+        sys.stderr.write(toolsets_error)
+        return 2
+    use_config_toolsets = _normalize_toolsets(toolsets) is None
+
+    os.environ["HERMES_YOLO_MODE"] = "1"
+    os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+    real_stdout = sys.stdout
+    real_stderr = sys.stderr
+    devnull = open(os.devnull, "w", encoding="utf-8")
+    response = None
+    failure = None
+    try:
+        with redirect_stdout(devnull), redirect_stderr(devnull):
+            try:
+                from agent.image_routing import build_native_content_parts
+                content_parts, skipped = build_native_content_parts(prompt, image_paths)
+                has_image_part = any(
+                    isinstance(part, dict) and part.get("type") == "image_url"
+                    for part in content_parts
+                )
+                user_message = content_parts if has_image_part else prompt
+                response = _run_agent(
+                    user_message,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                failure = exc
+    finally:
+        try:
+            devnull.close()
+        except Exception:
+            pass
+
+    if failure is not None:
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        real_stderr.write(f"hermes image oneshot: agent failed: {failure}\n")
+        real_stderr.flush()
+        return 1
+    if not (response or "").strip():
+        real_stderr.write("hermes image oneshot: no final response was produced; treating the run as failed.\n")
+        real_stderr.flush()
+        return 1
+    real_stdout.write(response)
+    if not response.endswith("\n"):
+        real_stdout.write("\n")
+    real_stdout.flush()
+    return 0
+
 if __name__ == "__main__":
-    prompt_path, model, provider, toolsets = sys.argv[1], sys.argv[2] or None, sys.argv[3] or None, sys.argv[4] or None
+    prompt_path, attachments_path, model, provider, toolsets = sys.argv[1], sys.argv[2], sys.argv[3] or None, sys.argv[4] or None, sys.argv[5] or None
     with open(prompt_path, "r", encoding="utf-8") as handle:
         prompt = handle.read()
+    image_paths = _load_image_paths(attachments_path)
     _startup()
-    raise SystemExit(run_oneshot(prompt, model=model, provider=provider, toolsets=toolsets))
-`, { mode: 0o600 });
+    raise SystemExit(_run_oneshot_with_images(prompt, image_paths, model=model, provider=provider, toolsets=toolsets))
+	`, { mode: 0o600 });
 
   const toolsets = mcpToolsetNames(work.agent?.mcpServers);
-  const args = [wrapperPath, promptPath, model || "", env.OPENAI_BASE_URL ? "custom" : "", toolsets.join(",")];
+  const args = [wrapperPath, promptPath, attachmentsPath, model || "", env.OPENAI_BASE_URL ? "custom" : "", toolsets.join(",")];
 
   emitRunEvent(ctx, "executor_diagnostic", JSON.stringify({
     phase: "start",
@@ -589,6 +707,7 @@ if __name__ == "__main__":
     skillCount: Array.isArray(work.agent?.skills) ? work.agent.skills.length : 0,
     installedSkills: installedSkills.map((skill) => skill.name),
     attachmentCount: materializedAttachments.length,
+    imageAttachmentCount: materializedAttachments.filter((attachment) => attachment.hermes_input_type === "image").length,
     manifestSystemPromptConfigured: Boolean(manifestSystemPrompt.trim()),
     manifestSystemPromptChars: manifestSystemPrompt.length,
     openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),

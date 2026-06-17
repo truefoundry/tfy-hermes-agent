@@ -19,6 +19,10 @@ const runId = "run_attachment_smoke";
 const callbackToken = "local-callback-token";
 const tfyApiKey = "tfy-local-key";
 const artifactText = "artifact smoke content: executor downloaded me";
+const artifactImage = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52
+]);
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -42,8 +46,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const promptPath = process.argv[3];
+const attachmentsPath = process.argv[4];
 const prompt = readFileSync(promptPath, "utf8");
-const match = prompt.match(/^\\s*local_path:\\s*(.+)$/m);
+const manifest = JSON.parse(readFileSync(attachmentsPath, "utf8"));
+const match = prompt.match(/^\\s*local_path:\\s*(.+input\\.txt)$/m);
 if (!match) {
   console.error("fake hermes: local_path missing from prompt");
   process.exit(3);
@@ -53,7 +59,9 @@ const fileText = readFileSync(localPath, "utf8");
 console.log(JSON.stringify({
   used_file: path.basename(localPath),
   file_text: fileText,
-  prompt_mentions_local_path: prompt.includes(localPath)
+  prompt_mentions_local_path: prompt.includes(localPath),
+  image_paths: manifest.image_paths || [],
+  image_input_count: (manifest.image_paths || []).length
 }));
 `, { mode: 0o755 });
   await chmod(fakePythonPath, 0o755);
@@ -86,6 +94,14 @@ console.log(JSON.stringify({
           artifact_fqn: "artifact:local/smoke/input:1",
           artifact_path: "FLOCAL1-input.txt",
           download_url: `${baseUrl}/artifact/input.txt`
+        }, {
+          slack_file_id: "FLOCAL2",
+          filename: "image.png",
+          mime_type: "image/png",
+          size: artifactImage.length,
+          artifact_fqn: "artifact:local/smoke/input:1",
+          artifact_path: "FLOCAL2-image.png",
+          download_url: `${baseUrl}/artifact/image.png`
         }],
         agent: {
           id: "agent-local",
@@ -98,6 +114,15 @@ console.log(JSON.stringify({
       };
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ work }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/artifact/image.png") {
+      res.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": String(artifactImage.length)
+      });
+      res.end(artifactImage);
       return;
     }
 
@@ -167,15 +192,19 @@ console.log(JSON.stringify({
     assert.ok(requests.some((request) => request.method === "GET" && request.path === `/api/internal/runs/${runId}/work`));
     const artifactRequest = requests.find((request) => request.method === "GET" && request.path === "/artifact/input.txt");
     assert.equal(artifactRequest?.authorization, `Bearer ${tfyApiKey}`);
+    const imageRequest = requests.find((request) => request.method === "GET" && request.path === "/artifact/image.png");
+    assert.equal(imageRequest?.authorization, `Bearer ${tfyApiKey}`);
     assert.ok(completes.length, "executor did not report completion");
     assert.equal(completes.at(-1).status, "completed");
     const result = JSON.parse(completes.at(-1).result);
     assert.equal(result.file_text, artifactText);
     assert.equal(result.prompt_mentions_local_path, true);
+    assert.equal(result.image_input_count, 1);
+    assert.match(result.image_paths[0], /FLOCAL2-image\.png$/);
 
     console.log(JSON.stringify({
       exit_code: exitCode,
-      downloaded_artifact_with_tfy_bearer: artifactRequest?.authorization === `Bearer ${tfyApiKey}`,
+      downloaded_artifact_with_tfy_bearer: artifactRequest?.authorization === `Bearer ${tfyApiKey}` && imageRequest?.authorization === `Bearer ${tfyApiKey}`,
       hermes_result: result,
       requested_paths: requests.map((request) => `${request.method} ${request.path}`)
     }, null, 2));
