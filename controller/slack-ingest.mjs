@@ -86,9 +86,14 @@ export async function ingestSlackFilesToArtifacts({
         maxBytes: maxFileBytes,
         fetchImpl
       });
-      const signedUrl = await client.getWriteSignedUrl({ versionId, path: artifactPath });
+      const uploadTarget = await client.getWriteSignedUrl({
+        versionId,
+        path: artifactPath,
+        storageRoot: staged.storage_root
+      });
+      const uploadRequest = typeof uploadTarget === "string" ? { signedUrl: uploadTarget } : uploadTarget;
       await client.uploadToSignedUrl({
-        signedUrl,
+        ...uploadRequest,
         body: bytes,
         contentType: file.mime_type || "application/octet-stream"
       });

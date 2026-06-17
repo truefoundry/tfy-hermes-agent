@@ -101,55 +101,114 @@ test("downloadSlackFileToBuffer enforces size limits", async () => {
   );
 });
 
-test("artifact signed URL upload sets Azure Blob header", async () => {
+test("artifact signed URL upload uses headers derived from artifact storage root", async () => {
   const requests = [];
   const client = createArtifactClient({
     tfyHost: "https://tenant.truefoundry.cloud",
     tfyApiKey: "tfy-key",
     fetchImpl: async (url, options = {}) => {
       requests.push({ url: String(url), options });
-      return { ok: true, text: async () => "" };
-    }
-  });
-
-  await client.uploadToSignedUrl({
-    signedUrl: "https://storage.blob.core.windows.net/container/file.jpg?sv=2023-01-03&se=2026-01-01&sig=test",
-    body: Buffer.from("image"),
-    contentType: "image/jpeg"
-  });
-
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].options.headers["content-type"], "image/jpeg");
-  assert.equal(requests[0].options.headers["x-ms-blob-type"], "BlockBlob");
-});
-
-test("artifact signed URL upload retries with Azure Blob header when storage requires it", async () => {
-  const requests = [];
-  const client = createArtifactClient({
-    tfyHost: "https://tenant.truefoundry.cloud",
-    tfyApiKey: "tfy-key",
-    fetchImpl: async (url, options = {}) => {
-      requests.push({ url: String(url), options });
-      if (requests.length === 1) {
+      if (String(url).endsWith("/api/ml/v1/artifact-versions/signed-urls")) {
         return {
-          ok: false,
-          status: 400,
-          text: async () => "<Error><Code>MissingRequiredHeader</Code><HeaderName>x-ms-blob-type</HeaderName></Error>"
+          ok: true,
+          text: async () => JSON.stringify({
+            data: [{ path: "photo.jpg", signed_url: "https://artifact-upload.example/photo.jpg" }]
+          })
         };
       }
       return { ok: true, text: async () => "" };
     }
   });
 
+  const uploadTarget = await client.getWriteSignedUrl({
+    versionId: "av_123",
+    path: "photo.jpg",
+    storageRoot: "wasbs://container@account.blob.core.windows.net/mlfoundry/repo/artifacts"
+  });
   await client.uploadToSignedUrl({
-    signedUrl: "https://artifact-upload.example/file.jpg",
+    ...uploadTarget,
     body: Buffer.from("image"),
     contentType: "image/jpeg"
   });
 
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0].options.headers["x-ms-blob-type"], undefined);
-  assert.equal(requests[1].options.headers["x-ms-blob-type"], "BlockBlob");
+  const upload = requests.find((request) => request.url === "https://artifact-upload.example/photo.jpg");
+  assert.equal(upload.options.headers["content-type"], "image/jpeg");
+  assert.equal(upload.options.headers["x-ms-blob-type"], "BlockBlob");
+});
+
+test("artifact signed URL upload does not add Azure headers for object stores that do not need them", async () => {
+  const requests = [];
+  const client = createArtifactClient({
+    tfyHost: "https://tenant.truefoundry.cloud",
+    tfyApiKey: "tfy-key",
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/api/ml/v1/artifact-versions/signed-urls")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            data: [{ path: "photo.jpg", signed_url: "https://artifact-upload.example/photo.jpg" }]
+          })
+        };
+      }
+      return { ok: true, text: async () => "" };
+    }
+  });
+
+  const uploadTarget = await client.getWriteSignedUrl({
+    versionId: "av_123",
+    path: "photo.jpg",
+    storageRoot: "s3://bucket/mlfoundry/repo/artifacts"
+  });
+  await client.uploadToSignedUrl({
+    ...uploadTarget,
+    body: Buffer.from("image"),
+    contentType: "image/jpeg"
+  });
+
+  const upload = requests.find((request) => request.url === "https://artifact-upload.example/photo.jpg");
+  assert.equal(upload.options.headers["content-type"], "image/jpeg");
+  assert.equal(upload.options.headers["x-ms-blob-type"], undefined);
+});
+
+test("artifact signed URL upload honors server-provided upload headers", async () => {
+  const requests = [];
+  const client = createArtifactClient({
+    tfyHost: "https://tenant.truefoundry.cloud",
+    tfyApiKey: "tfy-key",
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/api/ml/v1/artifact-versions/signed-urls")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            data: [{
+              path: "photo.jpg",
+              signed_url: "https://artifact-upload.example/photo.jpg",
+              headers: { "x-storage-provider-required": "true" }
+            }]
+          })
+        };
+      }
+      return { ok: true, text: async () => "" };
+    }
+  });
+
+  const uploadTarget = await client.getWriteSignedUrl({
+    versionId: "av_123",
+    path: "photo.jpg",
+    storageRoot: "gs://bucket/mlfoundry/repo/artifacts"
+  });
+  await client.uploadToSignedUrl({
+    ...uploadTarget,
+    body: Buffer.from("image"),
+    contentType: "image/jpeg"
+  });
+
+  const upload = requests.find((request) => request.url === "https://artifact-upload.example/photo.jpg");
+  assert.equal(upload.options.headers["content-type"], "image/jpeg");
+  assert.equal(upload.options.headers["x-storage-provider-required"], "true");
+  assert.equal(upload.options.headers["x-ms-blob-type"], undefined);
 });
 
 test("ingestSlackFilesToArtifacts uploads Slack files to staged artifact version", async () => {

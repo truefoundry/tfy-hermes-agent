@@ -36,23 +36,31 @@ function artifactManifest({ mlRepo, name, metadata = {} }) {
   };
 }
 
-function isAzureSignedUrl(value) {
-  try {
-    const url = new URL(value);
-    return /\.blob\.core\.windows\.net$/i.test(url.hostname)
-      || /\.dfs\.core\.windows\.net$/i.test(url.hostname)
-      || (url.searchParams.has("sig") && url.searchParams.has("sv") && url.searchParams.has("se"));
-  } catch {
-    return false;
-  }
-}
-
-function uploadHeaders({ signedUrl, contentType, forceAzureBlobHeader = false }) {
-  const headers = contentType ? { "content-type": contentType } : {};
-  if (forceAzureBlobHeader || isAzureSignedUrl(signedUrl)) {
-    headers["x-ms-blob-type"] = "BlockBlob";
+function normalizeHeaders(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const headers = {};
+  for (const [key, headerValue] of Object.entries(value)) {
+    if (!key || headerValue == null) continue;
+    headers[String(key).toLowerCase()] = String(headerValue);
   }
   return headers;
+}
+
+function uploadHeadersForStorageRoot(storageRoot) {
+  const root = String(storageRoot || "").toLowerCase();
+  if (root.startsWith("wasbs://") || root.startsWith("wasb://") || root.startsWith("abfs://") || root.startsWith("abfss://")) {
+    return { "x-ms-blob-type": "BlockBlob" };
+  }
+  return {};
+}
+
+function signedUrlEntryHeaders(entry) {
+  return {
+    ...normalizeHeaders(entry?.headers),
+    ...normalizeHeaders(entry?.upload_headers),
+    ...normalizeHeaders(entry?.request_headers),
+    ...normalizeHeaders(entry?.signed_headers)
+  };
 }
 
 export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) {
@@ -84,7 +92,7 @@ export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) 
     return payload;
   }
 
-  async function getWriteSignedUrl({ versionId, path }) {
+  async function getWriteSignedUrl({ versionId, path, storageRoot = "" }) {
     const payload = await mlJson("POST", "/api/ml/v1/artifact-versions/signed-urls", {
       id: versionId,
       paths: [path],
@@ -92,11 +100,20 @@ export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) 
     });
     const entry = (payload?.data || []).find((item) => item.path === path) || payload?.data?.[0];
     if (!entry?.signed_url) throw new Error(`artifact WRITE signed URL missing for ${path}`);
-    return entry.signed_url;
+    return {
+      signedUrl: entry.signed_url,
+      headers: {
+        ...uploadHeadersForStorageRoot(storageRoot),
+        ...signedUrlEntryHeaders(entry)
+      }
+    };
   }
 
-  async function uploadToSignedUrl({ signedUrl, body, contentType }) {
-    let headers = uploadHeaders({ signedUrl, contentType });
+  async function uploadToSignedUrl({ signedUrl, headers: uploadHeaders = {}, body, contentType }) {
+    const headers = {
+      ...(contentType ? { "content-type": contentType } : {}),
+      ...normalizeHeaders(uploadHeaders)
+    };
     const res = await fetchImpl(signedUrl, {
       method: "PUT",
       headers,
@@ -104,17 +121,6 @@ export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) 
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      if (!headers["x-ms-blob-type"] && /x-ms-blob-type|MissingRequiredHeader/i.test(text)) {
-        headers = uploadHeaders({ signedUrl, contentType, forceAzureBlobHeader: true });
-        const retry = await fetchImpl(signedUrl, {
-          method: "PUT",
-          headers,
-          body
-        });
-        if (retry.ok) return;
-        const retryText = await retry.text().catch(() => "");
-        throw new Error(`artifact upload failed ${retry.status}: ${retryText.slice(0, 300)}`);
-      }
       throw new Error(`artifact upload failed ${res.status}: ${text.slice(0, 300)}`);
     }
   }
