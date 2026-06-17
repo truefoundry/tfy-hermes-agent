@@ -1,9 +1,9 @@
 // Hermes wrapper controller.
 //
 // HTTP service in front of a single Hermes agent. Speaks Slack and the
-// OpenAI-compatible APIs to clients; dispatches per-turn TrueFoundry jobs
-// (executor) and shuttles the per-thread session DB between this pod's
-// RWO PVC and the ephemeral executor container.
+// OpenAI-compatible APIs to clients; dispatches turns to the executor
+// (truefoundry-job or truefoundry-service) and shuttles the per-thread
+// session DB between this pod's RWO PVC and the executor.
 
 import { createServer } from "node:http";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -17,6 +17,7 @@ import { openDb, prepareStatements, sessionDbPath, now } from "./db.mjs";
 import { publish, subscribe } from "./pubsub.mjs";
 import { signRunToken, verifyAndExtract } from "./tokens.mjs";
 import { startReconciler } from "./reconciler.mjs";
+import { buildWorkPayload, dispatchExecutorTurn } from "./dispatch.mjs";
 import {
   openAIId,
   responseObject as buildResponseObject,
@@ -33,14 +34,17 @@ import {
   listFromEnv,
   normalizeSlackChannelIds,
   normalizeSlackUserIds,
+  normalizeSlackFiles,
   parseMessageHandle,
   slackChannelAccess,
   slackFeedbackBlocks,
   slackMessageClaimKey,
+  slackMessageEventAllowed,
   slackPrompt,
   slackTaskDetails,
   slackTitle
 } from "./slack.mjs";
+import { ingestSlackFilesToArtifacts } from "./slack-ingest.mjs";
 import { writeSse, startSse, endSse } from "./sse.mjs";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +57,9 @@ const TFY_HOST = (process.env.TFY_HOST || "").replace(/\/+$/, "");
 const TFY_API_KEY = process.env.TFY_API_KEY || "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
+const HERMES_EXECUTOR_BACKEND = process.env.HERMES_EXECUTOR_BACKEND || "truefoundry-job";
 const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
+const HERMES_EXECUTOR_URL = (process.env.HERMES_EXECUTOR_URL || "").replace(/\/+$/, "");
 // Inbound /v1/* bearer is the TFY API key. We don't mint a separate
 // HERMES_OPENAI_API_KEY: clients hitting this controller already need a TFY
 // API key for any other platform action, and per-agent isolation is best
@@ -63,6 +69,7 @@ const RUN_TOKEN_TTL_SECONDS = Number(process.env.HERMES_RUN_TOKEN_TTL_SECONDS ||
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
+const SLACK_INBOUND_ARTIFACT_REPO = process.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO || "";
 const SLACK_STATUS_TEXT = process.env.HERMES_SLACK_STATUS_TEXT || "is thinking...";
 const SLACK_RUN_TIMEOUT_MS = Number(process.env.HERMES_SLACK_RUN_TIMEOUT_MS || 600_000);
 const SLACK_STREAM_CHUNK_DELAY_MS = Number(process.env.HERMES_SLACK_STREAM_CHUNK_DELAY_MS || 120);
@@ -370,77 +377,58 @@ async function tfyGet(apiPath) {
   return text ? JSON.parse(text) : {};
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
+async function probeRunOnPlatform(runId) {
+  if (HERMES_EXECUTOR_BACKEND === "truefoundry-service") {
+    if (!HERMES_EXECUTOR_URL) return { found: false, state: null };
+    try {
+      const res = await fetch(`${HERMES_EXECUTOR_URL}/api/health`);
+      if (res.ok) return { found: true, state: "running" };
+      return { found: false, state: null };
+    } catch (error) {
+      return { found: false, state: null, error };
+    }
+  }
+  if (!TFY_HOST || !TFY_API_KEY) return { found: false, state: null };
+  try {
+    const body = await tfyGet(`/api/svc/v1/jobs/runs?job_run_name_alias=${encodeURIComponent(runId)}&limit=1`);
+    const data = Array.isArray(body?.data) ? body.data : [];
+    if (!data.length) return { found: false, state: null };
+    const row = data[0];
+    const state = row.status || row.state || row.phase || null;
+    return { found: true, state };
+  } catch (error) {
+    return { found: false, state: null, error };
+  }
 }
 
-async function triggerJob({ run, agent, content, callbackToken }) {
+async function triggerExecutor({ run, agent, content, callbackToken, slack = null, attachments = [] }) {
   if (process.env.HERMES_SKIP_EXECUTOR_DISPATCH === "1") {
-    return { skipped: true };
-  }
-  if (!TFY_HOST || !TFY_API_KEY || !TFY_WORKSPACE_FQN) {
-    throw new Error("TFY_HOST, TFY_API_KEY, and TFY_WORKSPACE_FQN are required to dispatch the executor job");
+    return { skipped: true, backend: HERMES_EXECUTOR_BACKEND };
   }
   if (!PUBLIC_BASE_URL) {
     throw new Error("PUBLIC_BASE_URL must be set so the executor can call back");
   }
-  // applicationName + workspaceFqn (camelCase!) — the platform silently
-  // ignores `workspace_fqn` (snake_case) and returns an unfiltered first
-  // page of 200 apps tenant-wide, so the executor may not be in it. Lesson
-  // learned at deploy time, ~Jun 15 2026.
-  const apps = await tfyGet(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(TFY_WORKSPACE_FQN)}&applicationName=${encodeURIComponent(HERMES_EXECUTOR_NAME)}`);
-  const job = (Array.isArray(apps.data) ? apps.data : [])[0];
-  const deploymentId = job?.deployment?.id || job?.activeDeploymentId;
-  if (!deploymentId) throw new Error(`active deployment not found for job ${HERMES_EXECUTOR_NAME}`);
-
-  const work = {
-    run_id: run.id,
-    hermes_session_id: run.hermes_session_id,
+  const work = buildWorkPayload({
+    run,
+    agent,
     content,
-    agent: {
-      id: agent.id,
-      handle: agent.handle,
-      name: agent.name,
-      description: agent.description || "",
-      instructions: agent.instructions || "",
-      model: agent.model || HERMES_MODEL,
-      skills: agent.skills || [],
-      mcpServers: agent.mcpServers || []
-    },
-    callback_url: PUBLIC_BASE_URL,
-    controller_event_url: `${PUBLIC_BASE_URL}/api/internal/runs/${run.id}/events`
-  };
-  const workB64 = Buffer.from(JSON.stringify(work), "utf8").toString("base64");
-
-  const env = [
-    `HARNESS_WORK_B64=${shellQuote(workB64)}`,
-    `HARNESS_CALLBACK_TOKEN=${shellQuote(callbackToken)}`
-  ].join(" ");
-  const command = `sh -lc ${shellQuote(`${env} node executor/executor.mjs`)}`;
-
-  const res = await fetch(`${TFY_HOST}/api/svc/v1/jobs/trigger`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${TFY_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      deploymentId,
-      input: { command },
-      metadata: { job_run_name_alias: run.id }
-    })
+    slack,
+    attachments,
+    publicBaseUrl: PUBLIC_BASE_URL,
+    hermesModel: HERMES_MODEL
   });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`job trigger failed ${res.status}: ${text.slice(0, 500)}`);
-  return text ? JSON.parse(text) : {};
-}
-
-// Used by the reconciler: look up the run row, re-trigger with a fresh
-// callback token. Idempotent via job_run_name_alias=run_id.
-async function reTriggerJob(runId) {
-  const run = rowToRun(stmts.getRunById.get(runId));
-  if (!run) throw new Error(`run ${runId} not found for re-trigger`);
-  const agent = loadDefaultAgent();
-  if (!agent) throw new Error("default agent missing");
-  const token = signRunToken({ runId: run.id, secret: RUN_TOKEN_SECRET, expSeconds: RUN_TOKEN_TTL_SECONDS });
-  return triggerJob({ run, agent, content: "", callbackToken: token });
+  return dispatchExecutorTurn({
+    backend: HERMES_EXECUTOR_BACKEND,
+    tfyHost: TFY_HOST,
+    tfyApiKey: TFY_API_KEY,
+    tfyWorkspaceFqn: TFY_WORKSPACE_FQN,
+    executorName: HERMES_EXECUTOR_NAME,
+    executorUrl: HERMES_EXECUTOR_URL,
+    run,
+    work,
+    callbackToken,
+    tfyGet
+  });
 }
 
 // If `openaiIdFor` is provided it receives the freshly minted runId so the
@@ -470,14 +458,14 @@ function createRun({
   return getRunOrThrow(runId);
 }
 
-async function dispatchRun({ run, agent, content }) {
+async function dispatchRun({ run, agent, content, slack = null, attachments = [] }) {
   const callbackToken = signRunToken({
     runId: run.id,
     secret: RUN_TOKEN_SECRET,
     expSeconds: RUN_TOKEN_TTL_SECONDS
   });
   try {
-    const trigger = await triggerJob({ run, agent, content, callbackToken });
+    const trigger = await triggerExecutor({ run, agent, content, callbackToken, slack, attachments });
     stmts.setRunDispatched.run("dispatched", JSON.stringify(trigger), now(), run.id);
     return { run: getRunOrThrow(run.id), token: callbackToken };
   } catch (error) {
@@ -667,19 +655,20 @@ async function handleAssistantThreadContextChanged(payload) {
 
 async function handleSlackUserMessage(payload) {
   const event = payload.event || {};
-  if (event.bot_id || event.subtype || !event.channel || !event.user) return;
+  if (!slackMessageEventAllowed(event)) return;
   const teamId = payload.team_id || event.team;
   const channel = event.channel;
   const threadTs = event.thread_ts || event.ts;
   const route = parseMessageHandle(event.text);
   const text = route.text;
+  const slackFiles = normalizeSlackFiles(event.files);
   const isDirectMessage = event.channel_type === "im" || channel.startsWith("D");
   const isBotMention = event.type === "app_mention";
 
   if (!route.handle && !isBotMention && !isDirectMessage) return;
 
   const defaultAgent = loadDefaultAgent();
-  if (!text) {
+  if (!text && !slackFiles.length) {
     await slack.postMessage({
       channel,
       threadTs,
@@ -712,11 +701,12 @@ async function handleSlackUserMessage(payload) {
   });
 
   let stream = null;
+  let run = null;
   try {
     await slack.api("assistant.threads.setTitle", {
       channel_id: channel,
       thread_ts: threadTs,
-      title: `${label} ${slackTitle(text)}`.slice(0, 80)
+      title: `${label} ${slackTitle(text, slackFiles)}`.slice(0, 80)
     }).catch(() => {});
     await slack.setStatus({ channel, threadTs });
     stream = await slack.startStream({
@@ -728,7 +718,7 @@ async function handleSlackUserMessage(payload) {
       await slack.clearStatus({ channel, threadTs }).catch(() => {});
     };
 
-    const run = createRun({
+    run = createRun({
       hermesSessionId,
       openaiKind: "slack",
       openaiId: null,
@@ -736,14 +726,51 @@ async function handleSlackUserMessage(payload) {
       slackMessageTs: ts
     });
 
+    const slackContext = {
+      team_id: teamId,
+      channel_id: channel,
+      thread_ts: threadTs,
+      message_ts: event.ts,
+      user_id: event.user,
+      text
+    };
+
+    let attachments = [];
+    if (slackFiles.length) {
+      await slack.setStatus({
+        channel,
+        threadTs,
+        status: `Downloading ${slackFiles.length} attachment${slackFiles.length === 1 ? "" : "s"}...`
+      }).catch(() => {});
+      attachments = await ingestSlackFilesToArtifacts({
+        files: slackFiles,
+        runId: run.id,
+        mlRepoRef: SLACK_INBOUND_ARTIFACT_REPO,
+        slackBotToken: SLACK_BOT_TOKEN,
+        tfyHost: TFY_HOST,
+        tfyApiKey: TFY_API_KEY,
+        stateRoot: STATE_ROOT,
+        slackApi: slack.api.bind(slack)
+      });
+      await slack.setStatus({ channel, threadTs }).catch(() => {});
+    }
+
     const prompt = slackPrompt({
       text,
+      slack: slackContext,
+      attachments,
       context: { channel_id: channel, team_id: teamId },
       agent,
       fallbackHandle: defaultAgentHandle
     });
 
-    const dispatched = await dispatchRun({ run, agent, content: prompt });
+    const dispatched = await dispatchRun({
+      run,
+      agent,
+      content: prompt,
+      slack: slackContext,
+      attachments
+    });
     const dispatchFailed = dispatched.run.status === "failed";
 
     await slack.appendStream({
@@ -794,6 +821,10 @@ async function handleSlackUserMessage(payload) {
     return closeWith({ blocks: slackFeedbackBlocks(streamed.run.id) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (run?.id) {
+      stmts.setRunFailed.run(message, JSON.stringify({ error: message }), now(), run.id);
+      publish(run.id, { type: "complete", status: "failed", error: message });
+    }
     const markdownText = `I couldn't finish that request: ${message}`;
     if (stream?.ts) {
       await slack.stopStream({ channel, ts: stream.ts, markdownText }).catch(() => {});
@@ -1370,7 +1401,8 @@ ensureDefaultAgent();
 
 const stopReconciler = startReconciler(db, {
   tfyGet: TFY_HOST && TFY_API_KEY ? tfyGet : null,
-  tfyTriggerJob: TFY_HOST && TFY_API_KEY && TFY_WORKSPACE_FQN ? reTriggerJob : null
+  probeRunOnPlatform,
+  executorBackend: HERMES_EXECUTOR_BACKEND
 });
 
 const httpServer = createServer((req, res) => {

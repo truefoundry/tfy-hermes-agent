@@ -10,8 +10,8 @@
 //     than 24h.
 //
 // The reconciler does not assume Slack/TrueFoundry calls are available.
-// All IO goes through the injected tfyGet / tfyTriggerJob functions so the
-// loop is unit-testable and can run no-op when the platform is unconfigured.
+// Platform probes go through the injected probeRunOnPlatform / tfyGet
+// functions so the loop is unit-testable and can run no-op when unconfigured.
 //
 // Returns a `stop()` function that clears the interval.
 
@@ -19,6 +19,18 @@ const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_DISPATCH_TTL_MS = 30_000;
 const DEFAULT_RUN_TTL_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+async function probeJobForRun({ tfyGet, runId }) {
+  if (typeof tfyGet !== "function") return { found: false, state: null };
+  try {
+    const body = await tfyGet(`/api/svc/v1/jobs/runs?job_run_name_alias=${encodeURIComponent(runId)}&limit=1`);
+    const data = Array.isArray(body?.data) ? body.data : [];
+    if (!data.length) return { found: false, state: null };
+    return { found: true, state: pickJobAlias({ data }) };
+  } catch (error) {
+    return { found: false, state: null, error };
+  }
+}
 
 function isTerminalJobState(state) {
   const text = String(state || "").toLowerCase();
@@ -36,6 +48,12 @@ function isTerminalJobState(state) {
   ].includes(text);
 }
 
+function isTerminalPlatformState(state, backend) {
+  const text = String(state || "").toLowerCase();
+  if (backend === "truefoundry-service") return false;
+  return isTerminalJobState(text);
+}
+
 function pickJobAlias(payload) {
   if (!payload || typeof payload !== "object") return null;
   const data = Array.isArray(payload.data) ? payload.data[0] : payload.data || payload;
@@ -43,16 +61,11 @@ function pickJobAlias(payload) {
   return data.status || data.state || data.phase || null;
 }
 
-async function probeJobForRun({ tfyGet, runId }) {
-  if (typeof tfyGet !== "function") return { found: false, state: null };
-  try {
-    const body = await tfyGet(`/api/svc/v1/jobs/runs?job_run_name_alias=${encodeURIComponent(runId)}&limit=1`);
-    const data = Array.isArray(body?.data) ? body.data : [];
-    if (!data.length) return { found: false, state: null };
-    return { found: true, state: pickJobAlias({ data }) };
-  } catch (error) {
-    return { found: false, state: null, error };
+async function probeRun({ tfyGet, probeRunOnPlatform, runId }) {
+  if (typeof probeRunOnPlatform === "function") {
+    return probeRunOnPlatform(runId);
   }
+  return probeJobForRun({ tfyGet, runId });
 }
 
 export function startReconciler(db, {
@@ -60,7 +73,8 @@ export function startReconciler(db, {
   dispatchTtlMs = DEFAULT_DISPATCH_TTL_MS,
   runTtlMs = DEFAULT_RUN_TTL_MS,
   tfyGet = null,
-  tfyTriggerJob = null,
+  probeRunOnPlatform = null,
+  executorBackend = "truefoundry-job",
   logger = console
 } = {}) {
   if (!db) throw new Error("startReconciler: db is required");
@@ -84,7 +98,9 @@ export function startReconciler(db, {
     const cutoff = nowMs - dispatchTtlMs;
     const rows = selectQueuedStale.all(cutoff);
     for (const row of rows) {
-      const probe = await probeJobForRun({ tfyGet, runId: row.id });
+      const probe = executorBackend === "truefoundry-service"
+        ? { found: false, state: null }
+        : await probeRun({ tfyGet, probeRunOnPlatform, runId: row.id });
       if (probe.found) {
         markDispatched.run(JSON.stringify({ recovered_by: "reconciler", state: probe.state }), nowMs, row.id);
         logger?.log?.(`[reconciler] queued run ${row.id} found on platform (state=${probe.state ?? "unknown"}); marked dispatched`);
@@ -109,19 +125,19 @@ export function startReconciler(db, {
     const cutoff = nowMs - runTtlMs;
     const rows = selectInflightStale.all(cutoff);
     for (const row of rows) {
-      const probe = await probeJobForRun({ tfyGet, runId: row.id });
-      if (probe.found && isTerminalJobState(probe.state)) {
+      const probe = await probeRun({ tfyGet, probeRunOnPlatform, runId: row.id });
+      if (probe.found && isTerminalPlatformState(probe.state, executorBackend)) {
         markFailed.run(
-          `reconciler: job terminal without /complete (state=${probe.state ?? "unknown"})`,
+          `reconciler: executor terminal without /complete (state=${probe.state ?? "unknown"})`,
           nowMs,
           row.id
         );
         logger?.warn?.(`[reconciler] inflight run ${row.id} terminal on platform (state=${probe.state}); marked failed`);
         continue;
       }
-      if (!probe.found && !probe.error) {
+      if (!probe.found && !probe.error && executorBackend !== "truefoundry-service") {
         markFailed.run(
-          "reconciler: job not found on platform after run TTL",
+          "reconciler: executor not found on platform after run TTL",
           nowMs,
           row.id
         );

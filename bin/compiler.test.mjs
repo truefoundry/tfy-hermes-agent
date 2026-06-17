@@ -13,12 +13,21 @@ import YAML from "yaml";
 import {
   controllerManifest,
   executorManifest,
+  executorServiceManifest,
   volumeManifest,
   secretsManifest,
   slackManifest,
   planManifests,
   serializeManifest,
   readHermesConfig,
+  normalizeExecutorConfig,
+  normalizeExecutorBackend,
+  normalizeTerminalConfig,
+  daytonaPlatformEnv,
+  DEFAULT_HERMES_DAYTONA_SNAPSHOT,
+  DEFAULT_DAYTONA_AUTO_STOP_MINUTES,
+  DEFAULT_DAYTONA_AUTO_DELETE_INTERVAL,
+  requiredSecretKeys,
   isDirectInvocation,
   parseTfyCredentialsJson,
   generateRunTokenSecret,
@@ -48,6 +57,7 @@ function fakeConfig(overrides = {}) {
     slackTeamId: "",
     skills: ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"],
     mcpServers: ["https://mcp-gateway.example.com/servers/posthog"],
+    executor: { backend: "truefoundry-job" },
     ...overrides
   };
 }
@@ -109,6 +119,58 @@ test("volumeManifest provisions one RWO controller PVC at the configured workspa
   assert.ok(Number.isFinite(manifest.config.size) && manifest.config.size > 0);
 });
 
+test("normalizeExecutorConfig defaults to truefoundry-job", () => {
+  assert.deepEqual(normalizeExecutorConfig(undefined), { backend: "truefoundry-job" });
+  assert.deepEqual(normalizeExecutorConfig("tfy-job"), { backend: "truefoundry-job" });
+  assert.deepEqual(normalizeExecutorConfig("truefoundry"), { backend: "truefoundry-job" });
+  assert.deepEqual(normalizeExecutorConfig("truefoundry-service"), { backend: "truefoundry-service" });
+  assert.deepEqual(normalizeExecutorConfig("service"), { backend: "truefoundry-service" });
+});
+
+test("normalizeExecutorConfig rejects extra keys and unknown backends", () => {
+  assert.throws(
+    () => normalizeExecutorConfig({ backend: "truefoundry-job", snapshot: "x" }),
+    /accepts only backend/
+  );
+  assert.throws(() => normalizeExecutorConfig("kubernetes"), /executor must be truefoundry-job or truefoundry-service/);
+  assert.throws(() => normalizeExecutorConfig("daytona"), /executor daytona is not supported/);
+});
+
+test("normalizeTerminalConfig enforces truefoundry-service and daytona-only backend", () => {
+  assert.deepEqual(normalizeTerminalConfig("truefoundry-service", undefined), { backend: "daytona" });
+  assert.deepEqual(normalizeTerminalConfig("truefoundry-service", { backend: "daytona" }), { backend: "daytona" });
+  assert.throws(() => normalizeTerminalConfig("truefoundry-job", { backend: "daytona" }), /not supported when executor is truefoundry-job/);
+  assert.throws(() => normalizeTerminalConfig("truefoundry-service", { backend: "ssh" }), /terminal\.backend must be daytona/);
+});
+
+test("controllerManifest wires truefoundry-service executor URL", () => {
+  const manifest = controllerManifest(fakeConfig({ executor: { backend: "truefoundry-service" } }));
+  assert.equal(manifest.env.HERMES_EXECUTOR_BACKEND, "truefoundry-service");
+  assert.equal(manifest.env.HERMES_EXECUTOR_URL, "http://devrel-assistant-executor:8788");
+  assert.equal(manifest.env.HERMES_EXECUTOR_NAME, undefined);
+});
+
+test("requiredSecretKeys adds DAYTONA-API-KEY for truefoundry-service backend", () => {
+  assert.deepEqual(requiredSecretKeys(fakeConfig()).sort(), [
+    "HERMES-RUN-TOKEN-SECRET",
+    "SLACK-BOT-TOKEN",
+    "SLACK-SIGNING-SECRET",
+    "TFY-API-KEY"
+  ]);
+  assert.ok(requiredSecretKeys(fakeConfig({
+    executor: { backend: "truefoundry-service" }
+  })).includes("DAYTONA-API-KEY"));
+});
+
+test("daytonaPlatformEnv exposes platform-owned defaults", () => {
+  assert.deepEqual(daytonaPlatformEnv(), {
+    apiUrl: "https://app.daytona.io",
+    snapshot: DEFAULT_HERMES_DAYTONA_SNAPSHOT,
+    autoStopMinutes: DEFAULT_DAYTONA_AUTO_STOP_MINUTES,
+    autoDeleteInterval: DEFAULT_DAYTONA_AUTO_DELETE_INTERVAL
+  });
+});
+
 test("controllerManifest builds a single-replica Service pointing at Dockerfile.controller", () => {
   const manifest = controllerManifest(fakeConfig());
   assert.equal(manifest.type, "service");
@@ -127,6 +189,7 @@ test("controllerManifest builds a single-replica Service pointing at Dockerfile.
   // Health probe matches the controller's /api/health surface.
   assert.equal(manifest.liveness_probe.config.path, "/api/health");
   // Executor reference is wired so the controller can dispatch turns.
+  assert.equal(manifest.env.HERMES_EXECUTOR_BACKEND, "truefoundry-job");
   assert.equal(manifest.env.HERMES_EXECUTOR_NAME, "devrel-assistant-executor");
 });
 
@@ -140,6 +203,21 @@ test("executorManifest builds a Job template that runs the executor and mounts n
   assert.equal(manifest.env.HERMES_HOME, "/workspace/.hermes");
   // OPENAI_API_KEY is referenced via the SecretGroup, never inline.
   assert.match(manifest.env.OPENAI_API_KEY, /^tfy-secret:\/\//);
+});
+
+test("executorServiceManifest builds a Service for internal dispatch", () => {
+  const manifest = executorServiceManifest(fakeConfig({
+    executor: { backend: "truefoundry-service" }
+  }));
+  assert.equal(manifest.type, "service");
+  assert.equal(manifest.image.build_spec.command, "node executor/server.mjs");
+  assert.equal(manifest.ports[0].port, 8788);
+  assert.equal(manifest.ports[0].expose, false);
+  assert.match(manifest.env.DAYTONA_API_KEY, /DAYTONA-API-KEY/);
+  assert.match(manifest.env.HERMES_RUN_TOKEN_SECRET, /HERMES-RUN-TOKEN-SECRET/);
+  assert.equal(manifest.env.HERMES_TERMINAL_BACKEND, "daytona");
+  assert.equal(manifest.liveness_probe.config.path, "/api/health");
+  assert.equal(manifest.liveness_probe.config.port, 8788);
 });
 
 test("secretsManifest scaffolds the SecretGroup that the controller requires", () => {
@@ -169,6 +247,17 @@ test("slackManifest points Slack at /slack/events and /slack/interactions on the
   );
   assert.equal(manifest.settings.socket_mode_enabled, false);
   assert.ok(manifest.oauth_config.scopes.bot.includes("chat:write"));
+  assert.ok(manifest.oauth_config.scopes.bot.includes("files:read"));
+});
+
+test("controllerManifest emits HERMES_SLACK_INBOUND_ARTIFACT_REPO when configured", () => {
+  const manifest = controllerManifest(fakeConfig({ slackInboundArtifactRepo: "slack-inbound" }));
+  assert.equal(manifest.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO, "slack-inbound");
+});
+
+test("controllerManifest omits HERMES_SLACK_INBOUND_ARTIFACT_REPO when unset", () => {
+  const manifest = controllerManifest(fakeConfig());
+  assert.equal(manifest.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO, undefined);
 });
 
 test("planManifests defaults to volume + controller + executor and never emits secrets unless asked", () => {

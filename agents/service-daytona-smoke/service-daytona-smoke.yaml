@@ -1,0 +1,19 @@
+name: service-daytona-smoke
+
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+host: https://service-daytona-smoke-sai-ws.ml.tfy-eo.truefoundry.cloud
+
+executor: truefoundry-service
+terminal:
+  backend: daytona
+
+description: Smoke agent for executor Service + Hermes Daytona terminal sandbox.
+
+instructions: |
+  Reply concisely. For smoke tests, echo the requested phrase exactly.
+
+model: openai-main/gpt-5.5
+
+gateway_url: https://tfy-eo.truefoundry.cloud/api/llm/v1
+
+secrets: service-daytona-smoke-hermes-secrets

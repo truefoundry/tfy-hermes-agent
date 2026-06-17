@@ -21,19 +21,101 @@ const DEFAULT_VOLUME_SIZE_GI = 10;
 //
 // The TFY API key is reused for both outbound LLM-gateway calls and the
 // inbound /v1/* bearer check, so there is no separate HERMES-OPENAI-API-KEY.
-const REQUIRED_SECRET_KEYS = [
+const BASE_SECRET_KEYS = [
   "TFY-API-KEY",
   "HERMES-RUN-TOKEN-SECRET",
   "SLACK-BOT-TOKEN",
   "SLACK-SIGNING-SECRET"
 ];
+const DAYTONA_SECRET_KEY = "DAYTONA-API-KEY";
+const DEFAULT_DAYTONA_API_URL = "https://app.daytona.io";
+// Platform-owned Daytona settings (not agent yaml).
+export const DEFAULT_HERMES_DAYTONA_SNAPSHOT = "hermes-executor";
+export const DEFAULT_DAYTONA_AUTO_STOP_MINUTES = 5;
+export const DEFAULT_DAYTONA_AUTO_DELETE_INTERVAL = -1;
+
+const EXECUTOR_BACKEND_ALIASES = {
+  "truefoundry-job": "truefoundry-job",
+  "tfy-job": "truefoundry-job",
+  truefoundry: "truefoundry-job",
+  "truefoundry-service": "truefoundry-service",
+  service: "truefoundry-service"
+};
+
+export function normalizeExecutorBackend(raw) {
+  const text = String(raw ?? "truefoundry-job").trim().toLowerCase();
+  if (text === "daytona") {
+    throw new Error("executor daytona is not supported; use truefoundry-service (terminal sandbox defaults to daytona)");
+  }
+  const backend = EXECUTOR_BACKEND_ALIASES[text];
+  if (!backend) {
+    throw new Error(`executor must be truefoundry-job or truefoundry-service (aliases: tfy-job); got ${JSON.stringify(raw)}`);
+  }
+  return backend;
+}
+
+export function normalizeExecutorConfig(value) {
+  if (value !== undefined && value !== null && typeof value === "object" && !Array.isArray(value)) {
+    if (Object.keys(value).length > 1 || (Object.keys(value).length === 1 && !("backend" in value))) {
+      throw new Error("executor accepts only backend (or a shorthand string: truefoundry-job | truefoundry-service | tfy-job)");
+    }
+  }
+  const raw = value === undefined || value === null
+    ? "truefoundry-job"
+    : typeof value === "string"
+      ? value
+      : value.backend;
+  return { backend: normalizeExecutorBackend(raw) };
+}
+
+export function normalizeTerminalConfig(executorBackend, value) {
+  if (executorBackend === "truefoundry-job") {
+    if (value != null) {
+      throw new Error("terminal is not supported when executor is truefoundry-job");
+    }
+    return null;
+  }
+  if (executorBackend !== "truefoundry-service") {
+    throw new Error("terminal is only supported when executor is truefoundry-service");
+  }
+  if (value == null) {
+    return { backend: "daytona" };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    if (Object.keys(value).length > 1 || (Object.keys(value).length === 1 && !("backend" in value))) {
+      throw new Error("terminal accepts only backend (currently: daytona)");
+    }
+  }
+  const backend = String(typeof value === "string" ? value : value.backend || "daytona").trim().toLowerCase();
+  if (backend !== "daytona") {
+    throw new Error(`terminal.backend must be daytona when executor is truefoundry-service; got ${JSON.stringify(value)}`);
+  }
+  return { backend };
+}
+
+export function daytonaPlatformEnv() {
+  return {
+    apiUrl: DEFAULT_DAYTONA_API_URL,
+    snapshot: DEFAULT_HERMES_DAYTONA_SNAPSHOT,
+    autoStopMinutes: DEFAULT_DAYTONA_AUTO_STOP_MINUTES,
+    autoDeleteInterval: DEFAULT_DAYTONA_AUTO_DELETE_INTERVAL
+  };
+}
+
+export function requiredSecretKeys(config) {
+  const keys = [...BASE_SECRET_KEYS];
+  if (config?.executor?.backend === "truefoundry-service") keys.push(DAYTONA_SECRET_KEY);
+  return keys;
+}
 const SECRET_PLACEHOLDER_SLACK = "pending-slack-setup";
 const SECRET_PLACEHOLDER_TFY = "pending-tfy-api-key";
+const SECRET_PLACEHOLDER_DAYTONA = "pending-daytona-api-key";
 const SECRET_PLACEHOLDER_VALUES = new Set([
   "",
   "replace-in-truefoundry-only",
   SECRET_PLACEHOLDER_SLACK,
   SECRET_PLACEHOLDER_TFY,
+  SECRET_PLACEHOLDER_DAYTONA,
   "pending"
 ]);
 
@@ -266,6 +348,8 @@ export async function readHermesConfig(file) {
   if (version && !/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,254}$/.test(version)) {
     throw new Error("version must be a git branch, tag, or commit SHA");
   }
+  const executor = normalizeExecutorConfig(config.executor);
+  const terminal = normalizeTerminalConfig(executor.backend, config.terminal);
 
   return {
     name,
@@ -281,7 +365,10 @@ export async function readHermesConfig(file) {
     slackTeamId: String(config.slack_team_id || "").trim(),
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl),
-    version
+    slackInboundArtifactRepo: String(config.slack_inbound_artifact_repo || "").trim(),
+    version,
+    executor,
+    terminal
   };
 }
 
@@ -335,22 +422,15 @@ export function volumeManifest(config) {
   };
 }
 
+function healthProbe(port) {
+  return { config: { type: "http", path: "/api/health", port, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 };
+}
+
 export function controllerManifest(config) {
   const r = resourceNames(config);
-  const probe = { config: { type: "http", path: "/api/health", port: 8787, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 };
+  const probe = healthProbe(8787);
   const csv = (list) => list.join(",");
-  return {
-    name: r.controller,
-    type: "service",
-    workspace_fqn: config.workspaceFqn,
-    image: buildImage(config, "Dockerfile.controller"),
-    resources: {
-      cpu_request: 0.25, cpu_limit: 1,
-      memory_request: 512, memory_limit: 1024,
-      ephemeral_storage_request: 2000, ephemeral_storage_limit: 4000
-    },
-    replicas: 1,
-    env: {
+  const env = {
       STATE_ROOT: "/data",
       PUBLIC_BASE_URL: config.host.url,
       TFY_HOST: controlPlaneUrl(config),
@@ -369,13 +449,68 @@ export function controllerManifest(config) {
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_SLACK_TEAM_ID: config.slackTeamId,
       HERMES_MODEL: config.model,
-      HERMES_EXECUTOR_NAME: r.executor
+      HERMES_EXECUTOR_BACKEND: config.executor.backend
+  };
+  if (config.executor.backend === "truefoundry-job") {
+    env.HERMES_EXECUTOR_NAME = r.executor;
+  }
+  if (config.executor.backend === "truefoundry-service") {
+    env.HERMES_EXECUTOR_URL = `http://${r.executor}:8788`;
+  }
+  if (config.slackInboundArtifactRepo) {
+    env.HERMES_SLACK_INBOUND_ARTIFACT_REPO = config.slackInboundArtifactRepo;
+  }
+  return {
+    name: r.controller,
+    type: "service",
+    workspace_fqn: config.workspaceFqn,
+    image: buildImage(config, "Dockerfile.controller"),
+    resources: {
+      cpu_request: 0.25, cpu_limit: 1,
+      memory_request: 512, memory_limit: 1024,
+      ephemeral_storage_request: 2000, ephemeral_storage_limit: 4000
     },
+    replicas: 1,
+    env,
     ports: [{ port: 8787, protocol: "TCP", expose: true, host: config.host.hostname, app_protocol: "http" }],
     mounts: [{ type: "volume", mount_path: "/data", volume_fqn: `tfy-volume://${config.workspaceFqn}:${r.volume}` }],
     liveness_probe: probe,
     readiness_probe: probe,
     rollout_strategy: { type: "rolling_update", max_surge_percentage: 0, max_unavailable_percentage: 100 }
+  };
+}
+
+function executorEnv(config) {
+  const env = {
+    HOME: "/workspace",
+    HERMES_HOME: "/workspace/.hermes",
+    HARNESS_TURN_TIMEOUT_MS: "600000",
+    TFY_HOST: controlPlaneUrl(config),
+    TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
+    OPENAI_BASE_URL: config.gatewayUrl,
+    // Hermes calls the TrueFoundry LLM gateway with this bearer; the gateway
+    // authenticates with the TFY API key, not the controller's inbound bearer.
+    OPENAI_API_KEY: secretRef(config, "TFY-API-KEY"),
+    HERMES_MODEL: config.model
+  };
+  if (config.executor.backend === "truefoundry-service") {
+    env.HERMES_RUN_TOKEN_SECRET = secretRef(config, "HERMES-RUN-TOKEN-SECRET");
+    const daytona = daytonaPlatformEnv();
+    env.HERMES_TERMINAL_BACKEND = "daytona";
+    env.DAYTONA_API_KEY = secretRef(config, DAYTONA_SECRET_KEY);
+    env.HERMES_DAYTONA_API_URL = daytona.apiUrl;
+    env.HERMES_DAYTONA_SNAPSHOT = daytona.snapshot;
+    env.HERMES_DAYTONA_AUTO_STOP_INTERVAL = String(daytona.autoStopMinutes);
+    env.HERMES_DAYTONA_AUTO_DELETE_INTERVAL = String(daytona.autoDeleteInterval);
+  }
+  return env;
+}
+
+function executorResources() {
+  return {
+    cpu_request: 0.1, cpu_limit: 2,
+    memory_request: 2048, memory_limit: 4096,
+    ephemeral_storage_request: 8000, ephemeral_storage_limit: 16000
   };
 }
 
@@ -388,28 +523,29 @@ export function executorManifest(config) {
     concurrency_limit: 20,
     retries: 0,
     image: buildImage(config, "Dockerfile.executor", "node executor/executor.mjs"),
-    resources: {
-      cpu_request: 0.1, cpu_limit: 2,
-      memory_request: 2048, memory_limit: 4096,
-      ephemeral_storage_request: 8000, ephemeral_storage_limit: 16000
-    },
-    env: {
-      HOME: "/workspace",
-      HERMES_HOME: "/workspace/.hermes",
-      HARNESS_TURN_TIMEOUT_MS: "600000",
-      TFY_HOST: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
-      OPENAI_BASE_URL: config.gatewayUrl,
-      // Hermes calls the TrueFoundry LLM gateway with this bearer; the gateway
-      // authenticates with the TFY API key, not the controller's inbound bearer.
-      OPENAI_API_KEY: secretRef(config, "TFY-API-KEY"),
-      HERMES_MODEL: config.model
-    }
+    resources: executorResources(),
+    env: executorEnv(config)
+  };
+}
+
+export function executorServiceManifest(config) {
+  const probe = healthProbe(8788);
+  return {
+    name: resourceNames(config).executor,
+    type: "service",
+    workspace_fqn: config.workspaceFqn,
+    image: buildImage(config, "Dockerfile.executor", "node executor/server.mjs"),
+    resources: executorResources(),
+    replicas: 1,
+    env: executorEnv(config),
+    ports: [{ port: 8788, protocol: "TCP", expose: false, app_protocol: "http" }],
+    liveness_probe: probe,
+    readiness_probe: probe
   };
 }
 
 export function secretsManifest(config) {
-  const secrets = Object.fromEntries(REQUIRED_SECRET_KEYS.map((key) => [key, "replace-in-truefoundry-only"]));
+  const secrets = Object.fromEntries(requiredSecretKeys(config).map((key) => [key, "replace-in-truefoundry-only"]));
   return { name: config.secrets, type: "secret-group", workspace_fqn: config.workspaceFqn, secrets };
 }
 
@@ -442,7 +578,7 @@ export function slackManifest(config) {
         bot: [
           "app_mentions:read", "assistant:write",
           "channels:history", "channels:join", "channels:read",
-          "chat:write",
+          "chat:write", "files:read",
           "groups:history", "groups:read",
           "im:history", "im:read",
           "mpim:history", "mpim:read",
@@ -517,7 +653,7 @@ async function checkSecretGroup(config) {
     body: JSON.stringify({ secretGroupId: groupId, limit: 100, offset: 0 })
   });
   const keys = new Set(rowsOf(secrets).map((row) => row.key || row.name));
-  const missing = REQUIRED_SECRET_KEYS.filter((key) => !keys.has(key));
+  const missing = requiredSecretKeys(config).filter((key) => !keys.has(key));
   if (missing.length) throw new Error(`SecretGroup ${config.secrets} is missing keys: ${missing.join(", ")}`);
 }
 
@@ -571,14 +707,15 @@ async function fetchSecretValue(secretId) {
 
 function defaultSecretValue(key, tfyApiKey) {
   if (key === "TFY-API-KEY") return tfyApiKey || SECRET_PLACEHOLDER_TFY;
+  if (key === DAYTONA_SECRET_KEY) return SECRET_PLACEHOLDER_DAYTONA;
   if (key.startsWith("SLACK-")) return SECRET_PLACEHOLDER_SLACK;
   return SECRET_PLACEHOLDER_TFY;
 }
 
-async function buildSecretsPayloadForPut(entries, runToken, tfyApiKey) {
+async function buildSecretsPayloadForPut(config, entries, runToken, tfyApiKey) {
   const byKey = new Map(entries.map((entry) => [entry.key || entry.name, entry]));
   const payload = [];
-  for (const key of REQUIRED_SECRET_KEYS) {
+  for (const key of requiredSecretKeys(config)) {
     if (key === "HERMES-RUN-TOKEN-SECRET") {
       payload.push({ key, value: runToken });
       continue;
@@ -616,7 +753,7 @@ async function ensureSecretGroup(config, hermesFile, { skipLiveChecks }) {
         name: config.secrets,
         workspaceFqn: config.workspaceFqn,
         integrationId,
-        secrets: REQUIRED_SECRET_KEYS.map((key) => ({
+        secrets: requiredSecretKeys(config).map((key) => ({
           key,
           value: key === "HERMES-RUN-TOKEN-SECRET"
             ? runToken
@@ -638,7 +775,7 @@ async function ensureSecretGroup(config, hermesFile, { skipLiveChecks }) {
     if (!runTokenNeedsWrite(current)) return;
   }
 
-  const payload = await buildSecretsPayloadForPut(entries, runToken, tfyApiKey);
+  const payload = await buildSecretsPayloadForPut(config, entries, runToken, tfyApiKey);
   await tfyFetch(`/api/svc/v1/secret-groups/${encodeURIComponent(groupId)}`, {
     method: "PUT",
     body: JSON.stringify({ secrets: payload })
@@ -651,7 +788,8 @@ async function checkCollisions(config, allowUpdate) {
   // `workspaceFqn` is camelCase on the wire; `workspace_fqn` is silently
   // ignored and returns an unfiltered tenant page that can hide collisions.
   const rows = rowsOf(await tfyFetch(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`));
-  const ours = [r.controller, r.executor];
+  const includesExecutor = config.executor.backend === "truefoundry-job" || config.executor.backend === "truefoundry-service";
+  const ours = includesExecutor ? [r.controller, r.executor] : [r.controller];
   const nameOf = (row) => row.name || row.applicationName;
   const existing = rows.filter((row) => ours.includes(nameOf(row)));
   if (existing.length && !allowUpdate) {
@@ -686,7 +824,11 @@ export function planManifests(config, { includeSecrets }) {
   if (includeSecrets) list.push({ filename: `${config.name}-secrets.scaffold.yaml`, manifest: secretsManifest(config) });
   list.push({ filename: `${config.name}-volume.yaml`, manifest: volumeManifest(config) });
   list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
-  list.push({ filename: `${config.name}-executor.yaml`, manifest: executorManifest(config) });
+  if (config.executor.backend === "truefoundry-job") {
+    list.push({ filename: `${config.name}-executor.yaml`, manifest: executorManifest(config) });
+  } else if (config.executor.backend === "truefoundry-service") {
+    list.push({ filename: `${config.name}-executor.yaml`, manifest: executorServiceManifest(config) });
+  }
   return list;
 }
 

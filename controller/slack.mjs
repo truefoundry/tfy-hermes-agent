@@ -66,9 +66,11 @@ export function parseMessageHandle(text) {
   return { handle: handleFromString(match[1]), text: match[2].trim() };
 }
 
-export function slackTitle(text) {
+export function slackTitle(text, attachments = []) {
   const cleaned = cleanSlackText(text).replace(/\s+/g, " ").trim();
-  return cleaned ? cleaned.slice(0, 80) : "Hermes conversation";
+  if (cleaned) return cleaned.slice(0, 80);
+  const first = attachments?.[0]?.filename;
+  return first ? `File: ${first}`.slice(0, 80) : "Hermes conversation";
 }
 
 export function chunkText(text, size = 3500) {
@@ -93,13 +95,74 @@ export function slackMessageClaimKey({ teamId, channel, ts, userId }) {
   return [teamId || "unknown-team", channel, ts, userId || "unknown-user"].join(":");
 }
 
-export function slackPrompt({ text, context, agent, fallbackHandle }) {
+export function slackMessageEventAllowed(event) {
+  if (!event || event.bot_id || !event.channel || !event.user) return false;
+  if (!event.subtype) return true;
+  return event.subtype === "file_share";
+}
+
+export function normalizeSlackFiles(files) {
+  return (files || []).map((file) => {
+    const record = file || {};
+    const filename = String(record.name || record.filename || record.title || "file").trim() || "file";
+    const mimeType = String(record.mimetype || record.mime_type || "application/octet-stream").trim();
+    const filetype = String(record.filetype || "").trim() || null;
+    const size = Number(record.size || 0) || 0;
+    const id = String(record.id || "").trim() || null;
+    const urlPrivateDownload = String(record.url_private_download || record.url_private || "").trim() || null;
+    return {
+      id,
+      filename,
+      mime_type: mimeType,
+      filetype,
+      size,
+      url_private_download: urlPrivateDownload
+    };
+  }).filter((file) => file.id || file.url_private_download);
+}
+
+function formatAttachmentBlock(attachment) {
+  const lines = [
+    `- filename: ${attachment.filename}`,
+    `  mime_type: ${attachment.mime_type}`,
+    attachment.filetype ? `  filetype: ${attachment.filetype}` : null,
+    `  size: ${attachment.size}`,
+    attachment.slack_file_id ? `  slack_file_id: ${attachment.slack_file_id}` : null,
+    attachment.artifact_fqn ? `  artifact_fqn: ${attachment.artifact_fqn}` : null,
+    attachment.artifact_path ? `  artifact_path: ${attachment.artifact_path}` : null,
+    attachment.download_url ? `  download_url: ${attachment.download_url}` : null,
+    "  authorization for download_url: Bearer ${TFY_API_KEY}"
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+export function slackPrompt({
+  text,
+  slack = null,
+  attachments = [],
+  context,
+  agent,
+  fallbackHandle
+}) {
   const lines = [];
   if (agent?.handle) lines.push(`Selected Hermes agent: ${agentLabel(agent, fallbackHandle)} (${agent.name || agent.id})`);
   if (context?.channel_id) lines.push(`Active Slack channel: ${context.channel_id}`);
   if (context?.team_id) lines.push(`Slack team: ${context.team_id}`);
-  const prefix = lines.length ? `Slack context:\n${lines.join("\n")}\n\n` : "";
-  return `${prefix}${text}`;
+  if (slack?.user_id) lines.push(`Slack user: ${slack.user_id}`);
+  if (slack?.thread_ts) lines.push(`Slack thread: ${slack.thread_ts}`);
+  if (slack?.message_ts) lines.push(`Slack message: ${slack.message_ts}`);
+
+  const messageText = String(text ?? slack?.text ?? "").trim();
+  const blocks = [];
+  if (lines.length) blocks.push(`Slack context:\n${lines.join("\n")}`);
+  blocks.push(`Message text:\n${messageText || "(none)"}`);
+  if (attachments.length) {
+    blocks.push([
+      "File attachments (uploaded to TrueFoundry Artifacts):",
+      attachments.map((attachment) => formatAttachmentBlock(attachment)).join("\n")
+    ].join("\n"));
+  }
+  return `${blocks.join("\n\n")}\n`;
 }
 
 export function slackFeedbackBlocks(runId) {

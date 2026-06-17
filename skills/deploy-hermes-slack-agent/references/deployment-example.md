@@ -133,7 +133,7 @@ tfy-hermes-agent deploy devrel-assistant
 ```text
 <name>-volume.yaml       → Volume (10Gi RWO, /data on controller)
 <name>-controller.yaml   → Service (Slack + /v1/*)
-<name>-executor.yaml     → Job template (hermes -z per turn)
+<name>-executor.yaml     → Job (default) or internal Service (`executor` in agent yaml)
 ```
 
 After git-source image changes:
@@ -234,7 +234,7 @@ Written by `deploy` (default: `agents/<name>/deployments/`). Do not hand-edit �
 |---|---|---|
 | `<name>-volume.yaml` | Volume | 10Gi RWO PVC at `/data` on controller |
 | `<name>-controller.yaml` | Service | Slack webhooks + OpenAI-compatible `/v1/*` |
-| `<name>-executor.yaml` | Job | Per-turn Hermes runner; references SecretGroup via `tfy-secret://` |
+| `<name>-executor.yaml` | Job or Service | Hermes runner; references SecretGroup via `tfy-secret://` |
 
 Controller and executor manifests embed `tfy-secret://` references to the SecretGroup named in the agent config — they do not contain secret values.
 

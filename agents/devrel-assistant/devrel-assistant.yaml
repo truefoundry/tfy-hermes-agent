@@ -6,6 +6,13 @@ name: devrel-assistant
 
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 
+# Optional. Where Hermes turns run: truefoundry-job (default) or truefoundry-service.
+# executor: truefoundry-job
+#
+# Optional. Only for executor: truefoundry-service. Defaults to daytona.
+# terminal:
+#   backend: daytona
+
 description: Helps with DevRel launches, event follow-ups, and dashboard analysis.
 
 instructions: |
@@ -17,6 +24,9 @@ model: openai-main/gpt-5.5
 gateway_url: https://your-openai-compatible-gateway/v1
 
 secrets: devrel-assistant-hermes-secrets
+
+# Optional. ML repo for Slack file ingest (controller uploads attachments here).
+# slack_inbound_artifact_repo: slack-inbound
 
 # Optional. Omit this block or leave either list empty for unrestricted access.
 # Defaults: open to all users and all channels when this block is absent.

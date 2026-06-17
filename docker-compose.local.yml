@@ -1,0 +1,74 @@
+# Local E2E stack: controller + executor (truefoundry-service) + mock LLM gateway.
+# Usage: cp .env.local.example .env.local && docker compose -f docker-compose.local.yml up --build -d
+# Smoke:  npm run local:smoke
+
+services:
+  mock-gateway:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    command: ["node", "mock-gateway.mjs"]
+    volumes:
+      - ./scripts/mock-gateway.mjs:/app/mock-gateway.mjs:ro
+    environment:
+      PORT: "8799"
+      MOCK_GATEWAY_REPLY: ${MOCK_GATEWAY_REPLY:-Local smoke OK.}
+    expose:
+      - "8799"
+
+  executor:
+    build:
+      context: .
+      dockerfile: Dockerfile.executor
+    command: ["node", "executor/server.mjs"]
+    environment:
+      HERMES_RUN_TOKEN_SECRET: ${HERMES_RUN_TOKEN_SECRET}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://mock-gateway:8799/v1}
+      OPENAI_API_KEY: ${TFY_API_KEY}
+      TFY_API_KEY: ${TFY_API_KEY}
+      HERMES_MODEL: ${HERMES_MODEL:-mock-model}
+      HARNESS_TURN_TIMEOUT_MS: ${HARNESS_TURN_TIMEOUT_MS:-180000}
+      HERMES_TERMINAL_BACKEND: ${HERMES_TERMINAL_BACKEND:-}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      HERMES_DAYTONA_API_URL: ${HERMES_DAYTONA_API_URL:-https://app.daytona.io}
+      HERMES_DAYTONA_SNAPSHOT: ${HERMES_DAYTONA_SNAPSHOT:-hermes-executor}
+      HERMES_DAYTONA_AUTO_STOP_INTERVAL: ${HERMES_DAYTONA_AUTO_STOP_INTERVAL:-5}
+      HERMES_DAYTONA_AUTO_DELETE_INTERVAL: ${HERMES_DAYTONA_AUTO_DELETE_INTERVAL:--1}
+    depends_on:
+      - mock-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8788/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.controller
+    ports:
+      - "8787:8787"
+    volumes:
+      - hermes-local-data:/data
+    environment:
+      TFY_API_KEY: ${TFY_API_KEY}
+      HERMES_RUN_TOKEN_SECRET: ${HERMES_RUN_TOKEN_SECRET}
+      PUBLIC_BASE_URL: http://controller:8787
+      HERMES_EXECUTOR_BACKEND: truefoundry-service
+      HERMES_EXECUTOR_URL: http://executor:8788
+      HERMES_MODEL: ${HERMES_MODEL:-mock-model}
+      HERMES_AGENT_NAME: local-hermes
+      HERMES_AGENT_HANDLE: local-hermes
+      HERMES_OPENAI_SYNC_TIMEOUT_MS: ${HERMES_OPENAI_SYNC_TIMEOUT_MS:-180000}
+    depends_on:
+      executor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  hermes-local-data:

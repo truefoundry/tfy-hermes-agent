@@ -27,7 +27,7 @@ Keep the conversation moving one missing input or one manual task at a time.
   ```
 
 - **Generated output:** `deploy` compiles to `agents/<name>/deployments/` and runs `tfy apply -f` on each file in order (volume → controller → executor). Pass `--emit-manifests <dir>` to write elsewhere. **SecretGroup is provisioned via API, not as a deployments file.**
-- **Architecture:** Slack deployments use one Slack app per agent; API-only (`init --api-only`) skips Slack. Both paths use a `secrets` SecretGroup (`deploy` auto-creates if missing) and three TrueFoundry resources — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job template). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
+- **Architecture:** Slack deployments use one Slack app per agent; API-only (`init --api-only`) skips Slack. Both paths use a `secrets` SecretGroup (`deploy` auto-creates if missing) and three TrueFoundry resources — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job for `truefoundry-job`, or internal Service for `truefoundry-service` + Daytona terminal sandbox). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
 - **Slack transport:** HTTP Events API and Interactivity only. Do not use Socket Mode, WebSockets, slash commands, Slack user groups, or Slack OAuth.
 - **Secrets:** never ask the user to paste raw Slack tokens, signing secrets, TrueFoundry API keys, or the HERMES run-token secret into chat. `deploy` sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` automatically. For Slack, the user pastes bot token + signing secret into the SecretGroup UI after deploy — the only manual secret step.
 - **Deployment gate:** `deploy` calls `ensureSecretGroup` (API) then runs live validation unless `--skip-live-checks` is passed. There is no separate `validate` command.
@@ -125,7 +125,7 @@ Compiles to `agents/<name>/deployments/`:
 |---|---|
 | `<name>-volume.yaml` | Volume (10Gi RWO, /data on controller) |
 | `<name>-controller.yaml` | Service (Slack + `/v1/*`) |
-| `<name>-executor.yaml` | Job template (hermes per turn) |
+| `<name>-executor.yaml` | Job or Service | Hermes runner (`truefoundry-job` default) |
 
 Apply to TrueFoundry (`ensureSecretGroup` via API first, then live validation, then `tfy apply -f` from `deployments/` in order: volume → controller → executor):
 
@@ -221,6 +221,8 @@ Secrets:
 | `slack_team_id` | no | Slack team id if pinning a workspace. |
 | `skills` | no | Version-pinned FQNs, e.g. `agent-skill:tfy-eo/sai-mlrepo/humanizer:1`. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs only. |
+| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. |
+| `terminal` | no | Only for `truefoundry-service`; defaults to `daytona`. |
 
 If the user gives names instead of FQNs, URLs, or Slack IDs, pause and ask for exact values or offer to look them up when tooling is available. Prefer `tfy-hermes-agent init` when starting from scratch — it prompts every optional field.
 

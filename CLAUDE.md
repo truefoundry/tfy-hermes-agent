@@ -7,14 +7,23 @@ This file is read by Claude Code when it opens this repo. Keep it short.
 A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes-agent` on PyPI). Three runtime pieces + a CLI:
 
 - `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run executor callbacks. Owns the only persistent state (SQLite on a controller-only PVC).
-- `executor/executor.mjs` — per-turn TrueFoundry Job. Decodes a signed payload, downloads the session DB, runs `hermes -z`, uploads the updated DB, posts results back.
+- `executor/executor.mjs` — turn runner for `truefoundry-job` (TF Job entrypoint). `executor/server.mjs` — internal HTTP service for `truefoundry-service`. Both decode a signed payload, shuttle the session DB, run Hermes, post results back.
 - `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard with optional fields, `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
+
+**Executor modes** (agent yaml `executor`, default `truefoundry-job`):
+
+| Value | Turn runs in | Tool sandbox |
+|---|---|---|
+| `truefoundry-job` | Disposable TF Job | Job container |
+| `truefoundry-service` | Long-lived executor Service | Hermes `terminal.backend: daytona` (default) |
+
+`truefoundry-service` adds `DAYTONA-API-KEY` to the SecretGroup.
 
 ## Don't do these things
 
 - **Don't vendor Hermes source here.** Hermes is a pip dep (`hermes-agent[mcp]==0.16.0`) pulled into the executor image. Wrapping it is fine; modifying its internals is not.
-- **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. The 4 keys are `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
+- **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. Base keys: `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. Add `DAYTONA-API-KEY` when `executor: truefoundry-service`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
 - **Don't write to the controller's volume from the executor.** The executor uses its container's ephemeral FS. Session DBs travel over HTTP.
 - **Don't use the TrueFoundry Python SDK.** Use `tfy` CLI, the deploy skills, or raw REST endpoints (`/api/svc/v1/*`, `/api/ml/v1/*`). The SDK has Pydantic v1 issues on Python 3.13+.
 - **Don't add a new env knob for something `hermes.yaml` could express.** Prefer manifest fields.
@@ -36,9 +45,9 @@ CLI auth: `deploy` reads `~/.truefoundry/credentials.json` from `tfy login` (`ho
 
 ## Common tasks
 
-- **Run tests:** `npm run check` (29 tests, syntax checks, ~500ms).
+- **Run tests:** `npm run check` (syntax checks + unit tests, ~1s).
 - **Build images locally:** `docker build -f Dockerfile.controller -t hermes-controller:local .` and `docker build -f Dockerfile.executor -t hermes-executor:local .`. Both build clean on Apple Silicon and linux/amd64; if a remote build fails and a local build passes, the platform's build farm is the suspect (start by trying the commit SHA in `version:` instead of a branch name with slashes — TF's git puller has issues with branch names containing `/`).
-- **Smoke-test the controller:** boot with `docker run -e TFY_API_KEY=x -e HERMES_RUN_TOKEN_SECRET=y -e HERMES_SKIP_EXECUTOR_DISPATCH=1 -p 8787:8787 hermes-controller:local` and curl `/api/health`.
+- **Local E2E:** `cp .env.local.example .env.local && npm run local:e2e` (compose + mock gateway + `/v1/responses` smoke).
 - **Emit manifests without applying:** `tfy-hermes-agent deploy devrel-assistant --skip-live-checks --emit-manifests /tmp/out` (after `tfy login` or with `TFY_HOST` set).
 - **Force a controller restart without a rebuild** (to pick up new SecretGroup values): re-`tfy apply -f <controller-manifest>` with the same file. Rolling restart, ~30s, no build.
 

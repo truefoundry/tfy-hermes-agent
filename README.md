@@ -149,7 +149,7 @@ This compiles into `agents/devrel-assistant/deployments/`:
 |---|---|---|
 | `<name>-volume.yaml` | Volume | 10Gi RWO PVC at `/data` on the controller (session state) |
 | `<name>-controller.yaml` | Service | Long-running HTTP service (Slack + `/v1/*`) |
-| `<name>-executor.yaml` | Job | Per-turn Hermes runner (triggered manually by the controller) |
+| `<name>-executor.yaml` | Job or Service | Hermes runner (`truefoundry-job` default, or internal Service for `truefoundry-service`) |
 
 SecretGroup is **not** a deployments file — `deploy` provisions it via API before apply.
 
@@ -169,6 +169,20 @@ Flags:
 - `--skip-live-checks` — compile only; does not apply or provision secrets.
 
 After a git-source image change, rebuild with `tfy deploy --force -f agents/<name>/deployments/<name>-controller.yaml` (and executor) — not plain `tfy apply`.
+
+### Local E2E (docker compose)
+
+Self-contained stack: controller + executor Service + mock LLM gateway. No TF job dispatch, no real gateway, no Slack.
+
+```bash
+cp .env.local.example .env.local
+npm run local:e2e          # up → smoke → down
+npm run local:up           # build + start (first run builds executor image)
+npm run local:smoke        # POST /v1/responses, assert completed turn
+npm run local:down
+```
+
+Uses `truefoundry-service` dispatch inside the compose network. For `truefoundry-job`, test on a TF dev workspace instead.
 
 For Slack deployments, after deploy confirm **Event Subscriptions** and **Interactivity** URLs match your controller host:
 
@@ -231,6 +245,8 @@ mcp_servers:
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
+| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. Job = per-turn TF Job; Service = long-lived executor with Daytona tool sandbox. |
+| `terminal` | no | Only for `truefoundry-service`. Defaults to `daytona`. Not allowed for `truefoundry-job`. |
 
 ---
 
