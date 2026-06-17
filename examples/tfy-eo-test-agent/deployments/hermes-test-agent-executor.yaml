@@ -10,8 +10,8 @@ image:
   build_source:
     type: git
     repo_url: https://github.com/truefoundry/tfy-hermes-agent
-    branch_name: 7f72052682efe6e110483908fa2055c0f6572b24
-    ref: 7f72052682efe6e110483908fa2055c0f6572b24
+    branch_name: 8e1232e8c01d6e2983a3ac4176cfaf711a950275
+    ref: 8e1232e8c01d6e2983a3ac4176cfaf711a950275
   build_spec:
     type: dockerfile
     dockerfile_path: Dockerfile.executor

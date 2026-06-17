@@ -10,7 +10,7 @@ This example is the reusable test deployment for validating Hermes Slack and API
 - Public host: `https://hermes-test-agent-sai-ws.ml.tfy-eo.truefoundry.cloud`
 - Gateway URL: `https://gateway.truefoundry.ai`
 - Model: `openai-main/gpt-5.5`
-- Source version: `7f72052682efe6e110483908fa2055c0f6572b24`
+- Source version: `8e1232e8c01d6e2983a3ac4176cfaf711a950275`
 - SecretGroup: `hermes-test-agent-secrets`
 
 The generated TrueFoundry manifests live in `examples/tfy-eo-test-agent/deployments/`. Do not edit those files directly; change `hermes-test-agent.yaml` and regenerate them.
