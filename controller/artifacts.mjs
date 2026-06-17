@@ -26,13 +26,16 @@ export function sanitizeArtifactPath(slackFileId, filename) {
   return `${safeId}-${safeName || "file"}`;
 }
 
-function artifactManifest({ mlRepo, name, metadata = {} }) {
+function artifactManifest({ mlRepo, name, metadata = {}, sourceUri = "" }) {
   return {
     type: "artifact-version",
     name,
     ml_repo: mlRepo,
     metadata,
-    source: { type: "truefoundry" }
+    source: {
+      type: "truefoundry",
+      ...(sourceUri ? { uri: sourceUri } : {})
+    }
   };
 }
 
@@ -125,9 +128,9 @@ export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) 
     }
   }
 
-  async function finalizeArtifactVersion({ mlRepo, name, metadata }) {
+  async function finalizeArtifactVersion({ mlRepo, name, metadata, storageRoot }) {
     return mlJson("PUT", "/api/ml/v1/artifact-versions", {
-      manifest: artifactManifest({ mlRepo, name, metadata })
+      manifest: artifactManifest({ mlRepo, name, metadata, sourceUri: storageRoot })
     });
   }
 

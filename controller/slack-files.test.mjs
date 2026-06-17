@@ -211,6 +211,33 @@ test("artifact signed URL upload honors server-provided upload headers", async (
   assert.equal(upload.options.headers["x-ms-blob-type"], undefined);
 });
 
+test("artifact finalize sends staged storage root as source uri", async () => {
+  const requests = [];
+  const client = createArtifactClient({
+    tfyHost: "https://tenant.truefoundry.cloud",
+    tfyApiKey: "tfy-key",
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ data: { fqn: "artifact:tenant/repo/slack-run:1" } })
+      };
+    }
+  });
+
+  await client.finalizeArtifactVersion({
+    mlRepo: "slack-inbound",
+    name: "slack-run_abc",
+    metadata: { source: "slack" },
+    storageRoot: "wasbs://container@account.blob.core.windows.net/mlfoundry/repo/artifacts"
+  });
+
+  const finalize = requests.find((request) => request.url.endsWith("/api/ml/v1/artifact-versions"));
+  const body = JSON.parse(finalize.options.body);
+  assert.equal(body.manifest.source.type, "truefoundry");
+  assert.equal(body.manifest.source.uri, "wasbs://container@account.blob.core.windows.net/mlfoundry/repo/artifacts");
+});
+
 test("ingestSlackFilesToArtifacts uploads Slack files to staged artifact version", async () => {
   const calls = [];
   const artifactClient = {
@@ -225,8 +252,8 @@ test("ingestSlackFilesToArtifacts uploads Slack files to staged artifact version
     uploadToSignedUrl: async ({ signedUrl, body, contentType }) => {
       calls.push(["upload", signedUrl, body.toString(), contentType]);
     },
-    finalizeArtifactVersion: async ({ mlRepo, name }) => {
-      calls.push(["finalize", mlRepo, name]);
+    finalizeArtifactVersion: async ({ mlRepo, name, storageRoot }) => {
+      calls.push(["finalize", mlRepo, name, storageRoot]);
       return { data: { fqn: "artifact:tenant/repo/slack-run_abc:1" } };
     },
     getReadSignedUrls: async ({ versionId, paths }) => {
@@ -275,6 +302,7 @@ test("ingestSlackFilesToArtifacts uploads Slack files to staged artifact version
   assert.equal(attachments[0].artifact_fqn, "artifact:tenant/repo/slack-run_abc:1");
   assert.equal(attachments[0].download_url, "https://read.example/F123-note.txt");
   assert.deepEqual(calls[0], ["stage", "slack-inbound", "slack-run_abc", { source: "slack", run_id: "run_abc", file_count: 1 }]);
+  assert.deepEqual(calls[3], ["finalize", "slack-inbound", "slack-run_abc", "s3://bucket/root"]);
 });
 
 test("ingestSlackFilesToArtifacts requires artifact repo when files are present", async () => {

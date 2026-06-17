@@ -100,7 +100,12 @@ export async function ingestSlackFilesToArtifacts({
       artifactPaths.push({ file, artifactPath });
     }
 
-    const finalized = await client.finalizeArtifactVersion({ mlRepo, name: artifactName, metadata });
+    const finalized = await client.finalizeArtifactVersion({
+      mlRepo,
+      name: artifactName,
+      metadata,
+      storageRoot: staged.storage_root
+    });
     const artifactFqn = finalized?.data?.fqn
       || (await client.getArtifactVersion(versionId))?.data?.fqn
       || null;
