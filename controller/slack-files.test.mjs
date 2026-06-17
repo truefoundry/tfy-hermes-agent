@@ -8,6 +8,7 @@ import {
   slackTitle
 } from "./slack.mjs";
 import {
+  createArtifactClient,
   parseMlRepoRef,
   sanitizeArtifactName,
   sanitizeArtifactPath,
@@ -98,6 +99,57 @@ test("downloadSlackFileToBuffer enforces size limits", async () => {
     }),
     /exceeds 8 byte limit/
   );
+});
+
+test("artifact signed URL upload sets Azure Blob header", async () => {
+  const requests = [];
+  const client = createArtifactClient({
+    tfyHost: "https://tenant.truefoundry.cloud",
+    tfyApiKey: "tfy-key",
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      return { ok: true, text: async () => "" };
+    }
+  });
+
+  await client.uploadToSignedUrl({
+    signedUrl: "https://storage.blob.core.windows.net/container/file.jpg?sv=2023-01-03&se=2026-01-01&sig=test",
+    body: Buffer.from("image"),
+    contentType: "image/jpeg"
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.headers["content-type"], "image/jpeg");
+  assert.equal(requests[0].options.headers["x-ms-blob-type"], "BlockBlob");
+});
+
+test("artifact signed URL upload retries with Azure Blob header when storage requires it", async () => {
+  const requests = [];
+  const client = createArtifactClient({
+    tfyHost: "https://tenant.truefoundry.cloud",
+    tfyApiKey: "tfy-key",
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (requests.length === 1) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => "<Error><Code>MissingRequiredHeader</Code><HeaderName>x-ms-blob-type</HeaderName></Error>"
+        };
+      }
+      return { ok: true, text: async () => "" };
+    }
+  });
+
+  await client.uploadToSignedUrl({
+    signedUrl: "https://artifact-upload.example/file.jpg",
+    body: Buffer.from("image"),
+    contentType: "image/jpeg"
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.headers["x-ms-blob-type"], undefined);
+  assert.equal(requests[1].options.headers["x-ms-blob-type"], "BlockBlob");
 });
 
 test("ingestSlackFilesToArtifacts uploads Slack files to staged artifact version", async () => {

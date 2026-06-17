@@ -36,6 +36,25 @@ function artifactManifest({ mlRepo, name, metadata = {} }) {
   };
 }
 
+function isAzureSignedUrl(value) {
+  try {
+    const url = new URL(value);
+    return /\.blob\.core\.windows\.net$/i.test(url.hostname)
+      || /\.dfs\.core\.windows\.net$/i.test(url.hostname)
+      || (url.searchParams.has("sig") && url.searchParams.has("sv") && url.searchParams.has("se"));
+  } catch {
+    return false;
+  }
+}
+
+function uploadHeaders({ signedUrl, contentType, forceAzureBlobHeader = false }) {
+  const headers = contentType ? { "content-type": contentType } : {};
+  if (forceAzureBlobHeader || isAzureSignedUrl(signedUrl)) {
+    headers["x-ms-blob-type"] = "BlockBlob";
+  }
+  return headers;
+}
+
 export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) {
   if (!tfyHost || !tfyApiKey) {
     throw new Error("TFY_HOST and TFY_API_KEY are required for artifact uploads");
@@ -77,13 +96,25 @@ export function createArtifactClient({ tfyHost, tfyApiKey, fetchImpl = fetch }) 
   }
 
   async function uploadToSignedUrl({ signedUrl, body, contentType }) {
+    let headers = uploadHeaders({ signedUrl, contentType });
     const res = await fetchImpl(signedUrl, {
       method: "PUT",
-      headers: contentType ? { "content-type": contentType } : {},
+      headers,
       body
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      if (!headers["x-ms-blob-type"] && /x-ms-blob-type|MissingRequiredHeader/i.test(text)) {
+        headers = uploadHeaders({ signedUrl, contentType, forceAzureBlobHeader: true });
+        const retry = await fetchImpl(signedUrl, {
+          method: "PUT",
+          headers,
+          body
+        });
+        if (retry.ok) return;
+        const retryText = await retry.text().catch(() => "");
+        throw new Error(`artifact upload failed ${retry.status}: ${retryText.slice(0, 300)}`);
+      }
       throw new Error(`artifact upload failed ${res.status}: ${text.slice(0, 300)}`);
     }
   }
