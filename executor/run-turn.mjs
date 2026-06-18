@@ -49,6 +49,19 @@ function executorHermesHome(env = process.env) {
   return env.HERMES_HOME || path.join(executorWorkspaceRoot(env), ".hermes");
 }
 
+export function safeHermesSessionDirName(value) {
+  const text = String(value || "session").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 160);
+  return text && text !== "." && text !== ".." ? text : "session";
+}
+
+export function hermesHomeForTurn(env = process.env, hermesSessionId = "") {
+  const base = executorHermesHome(env);
+  if (env.HERMES_STATE_OWNER === "runtime") {
+    return path.join(base, "sessions", safeHermesSessionDirName(hermesSessionId));
+  }
+  return base;
+}
+
 function turnContext(work, callbackToken) {
   const runId = work?.run_id;
   const hermesSessionId = work?.hermes_session_id;
@@ -614,8 +627,8 @@ async function runHermes(ctx, work, secrets) {
   env.HERMES_ACCEPT_HOOKS = "1";
   const workspaceRoot = executorWorkspaceRoot(env);
   env.HOME = workspaceRoot;
-  env.HERMES_HOME = executorHermesHome(env);
   env.HERMES_SESSION_ID = ctx.hermesSessionId;
+  env.HERMES_HOME = hermesHomeForTurn(env, ctx.hermesSessionId);
   env.HARNESS_EVENT_URL = `${ctx.callbackBase}${ctx.eventsPath}`;
   env.HARNESS_CALLBACK_TOKEN = ctx.callbackToken;
 

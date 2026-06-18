@@ -6,8 +6,30 @@ import test from "node:test";
 
 import {
   appendAudioTranscriptsToPrompt,
+  hermesHomeForTurn,
+  safeHermesSessionDirName,
   transcribeAudioAttachments
 } from "./run-turn.mjs";
+
+test("hermesHomeForTurn isolates runtime-owned state by Hermes session id", () => {
+  const env = {
+    HERMES_HOME: "/workspace/.hermes",
+    HERMES_STATE_OWNER: "runtime"
+  };
+
+  assert.equal(
+    hermesHomeForTurn(env, "response/session:abc"),
+    "/workspace/.hermes/sessions/response_session_abc"
+  );
+  assert.equal(safeHermesSessionDirName("../bad/session"), ".._bad_session");
+});
+
+test("hermesHomeForTurn preserves legacy executor shared home", () => {
+  assert.equal(
+    hermesHomeForTurn({ HERMES_HOME: "/workspace/.hermes" }, "session-a"),
+    "/workspace/.hermes"
+  );
+});
 
 test("transcribeAudioAttachments skips audio when STT env is incomplete", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "hermes-voice-test-"));
