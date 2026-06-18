@@ -54,6 +54,6 @@ If the test agent already exists and you intentionally want to replace it:
 node bin/tfy-hermes-agent.mjs deploy examples/tfy-eo-test-agent/hermes-test-agent.yaml --update
 ```
 
-`deploy` creates or updates the SecretGroup and sets `TFY-API-KEY` plus `HERMES-RUN-TOKEN-SECRET` automatically. For Slack feature tests, paste the Slack app's bot token and signing secret into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` in the SecretGroup after deploy.
+`deploy` creates or updates the SecretGroup and sets `TFY-API-KEY` plus `HERMES-RUN-TOKEN-SECRET` automatically. For Slack feature tests, paste the Slack app's bot token and signing secret into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` in the SecretGroup after deploy. The cleanup job uses `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY`; set it to a virtual-account token scoped to `hermes-inbound-artifacts-prod`.
 
 When testing a feature branch with a slash in the branch name, set `version` in `hermes-test-agent.yaml` to the commit SHA instead of the branch name.

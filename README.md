@@ -187,6 +187,10 @@ Image attachments are passed to Hermes as image inputs using their local workspa
 
 When `slack_inbound_artifact_repo` is set, deploy also emits a weekly `<name>-cleanup` TrueFoundry job. By default it deletes only Hermes Slack run artifacts older than 7 days (`slack-run_…` names with Slack run metadata), leaving unrelated artifacts in the repo untouched.
 
+The cleanup job uses SecretGroup key `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY`, separate from the controller/executor `TFY-API-KEY`. Use a virtual-account token scoped to the inbound artifact ML repo for that key.
+
+To alert on cleanup job failures, configure `slack_inbound_artifact_cleanup.failure_alert` with an existing TrueFoundry notification-channel integration FQN. `deploy` leaves alerts out when this field is omitted, because tenants without an email or Slack notification integration reject alert manifests.
+
 ### 5. Verify
 
 ```bash
@@ -225,6 +229,11 @@ slack_inbound_artifact_cleanup:
   retention_days: 7
   schedule: "0 2 * * 0"
   timezone: UTC
+  # Optional; requires an existing TrueFoundry notification-channel integration.
+  # failure_alert:
+  #   type: email
+  #   notification_channel: tfy-eo:notification-channel:ops-email
+  #   to_emails: [ops@example.com]
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
 mcp_servers:
@@ -246,7 +255,7 @@ mcp_servers:
 | `slack.allowed_users` | no | Slack user IDs. Empty or omitted = all users. `init` prompts. |
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
 | `slack_inbound_artifact_repo` | no | ML repo name or `tfy-mlrepo://` FQN for Slack file uploads. Required if users will send Slack attachments. |
-| `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention, weekly cron `0 2 * * 0`, and UTC timezone. |
+| `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention, weekly cron `0 2 * * 0`, and UTC timezone. Optional `failure_alert` emits job failure alerts through an existing TrueFoundry email, Slack bot, or Slack webhook notification channel. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
 | `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. `init` prompts; job default omitted from yaml. |
@@ -273,4 +282,5 @@ Then say **"create a Hermes Slack agent"**.
 | `/slack/*` (webhooks) | `X-Slack-Signature` HMAC | Verified with SecretGroup `SLACK-SIGNING-SECRET` |
 | Slack outbound messages | Bot token | SecretGroup `SLACK-BOT-TOKEN` |
 | LLM calls (executor) | Gateway bearer | SecretGroup `TFY-API-KEY` via `OPENAI_API_KEY` |
+| Slack artifact cleanup job | Scoped TrueFoundry virtual-account token | SecretGroup `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` |
 | Daytona tool sandbox | API key | SecretGroup `DAYTONA-API-KEY` (only when `executor: truefoundry-service`) |

@@ -32,6 +32,7 @@ const BASE_SECRET_KEYS = [
   "SLACK-SIGNING-SECRET"
 ];
 const DAYTONA_SECRET_KEY = "DAYTONA-API-KEY";
+const ARTIFACT_CLEANUP_TFY_SECRET_KEY = "HERMES-ARTIFACT-CLEANUP-TFY-API-KEY";
 const DEFAULT_DAYTONA_API_URL = "https://app.daytona.io";
 // Platform-owned Daytona settings (not agent yaml).
 export const DEFAULT_HERMES_DAYTONA_SNAPSHOT = "hermes-executor";
@@ -124,6 +125,9 @@ export function daytonaPlatformEnv() {
 export function requiredSecretKeys(config) {
   const keys = [...BASE_SECRET_KEYS];
   if (config?.executor?.backend === "truefoundry-service") keys.push(DAYTONA_SECRET_KEY);
+  if (config?.slackInboundArtifactRepo && config?.slackInboundArtifactCleanup?.enabled) {
+    keys.push(ARTIFACT_CLEANUP_TFY_SECRET_KEY);
+  }
   return keys;
 }
 const SECRET_PLACEHOLDER_SLACK = "pending-slack-setup";
@@ -353,12 +357,13 @@ export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }
     retentionDays: DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS,
     schedule: DEFAULT_ARTIFACT_CLEANUP_SCHEDULE,
     prefix: DEFAULT_ARTIFACT_CLEANUP_PREFIX,
-    timezone: DEFAULT_ARTIFACT_CLEANUP_TIMEZONE
+    timezone: DEFAULT_ARTIFACT_CLEANUP_TIMEZONE,
+    failureAlert: null
   };
   if (value == null) return defaults;
   if (typeof value === "boolean") return { ...defaults, enabled: value };
   assertObject(value, "slack_inbound_artifact_cleanup");
-  const allowed = new Set(["enabled", "retention_days", "schedule", "prefix", "timezone"]);
+  const allowed = new Set(["enabled", "retention_days", "schedule", "prefix", "timezone", "failure_alert"]);
   const extra = Object.keys(value).filter((key) => !allowed.has(key));
   if (extra.length) throw new Error(`slack_inbound_artifact_cleanup has unsupported keys: ${extra.join(", ")}`);
 
@@ -386,8 +391,48 @@ export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }
     retentionDays,
     schedule,
     prefix,
-    timezone
+    timezone,
+    failureAlert: normalizeCleanupFailureAlert(value.failure_alert)
   };
+}
+
+function normalizeCleanupFailureAlert(value) {
+  if (value == null || value === false) return null;
+  assertObject(value, "slack_inbound_artifact_cleanup.failure_alert");
+  const type = String(value.type || "").trim();
+  const notificationChannel = String(value.notification_channel || "").trim();
+  if (!notificationChannel) {
+    throw new Error("slack_inbound_artifact_cleanup.failure_alert.notification_channel is required");
+  }
+  if (type === "email") {
+    const toEmails = stringList(value.to_emails, "slack_inbound_artifact_cleanup.failure_alert.to_emails");
+    if (!toEmails.length) {
+      throw new Error("slack_inbound_artifact_cleanup.failure_alert.to_emails is required for email alerts");
+    }
+    return {
+      type,
+      notification_channel: notificationChannel,
+      to_emails: toEmails
+    };
+  }
+  if (type === "slack-bot") {
+    const channels = stringList(value.channels, "slack_inbound_artifact_cleanup.failure_alert.channels");
+    if (!channels.length) {
+      throw new Error("slack_inbound_artifact_cleanup.failure_alert.channels is required for slack-bot alerts");
+    }
+    return {
+      type,
+      notification_channel: notificationChannel,
+      channels
+    };
+  }
+  if (type === "slack-webhook") {
+    return {
+      type,
+      notification_channel: notificationChannel
+    };
+  }
+  throw new Error("slack_inbound_artifact_cleanup.failure_alert.type must be email, slack-bot, or slack-webhook");
 }
 
 export async function readHermesConfig(file) {
@@ -615,7 +660,7 @@ export function artifactCleanupManifest(config) {
     throw new Error("artifact cleanup job requires slack_inbound_artifact_repo");
   }
   const cleanup = config.slackInboundArtifactCleanup || normalizeSlackInboundArtifactCleanup(null, { enabledByDefault: true });
-  return {
+  const manifest = {
     name: resourceNames(config).artifactCleanup,
     type: "job",
     workspace_fqn: config.workspaceFqn,
@@ -635,13 +680,22 @@ export function artifactCleanupManifest(config) {
     },
     env: {
       TFY_HOST: controlPlaneUrl(config),
-      TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
+      TFY_API_KEY: secretRef(config, ARTIFACT_CLEANUP_TFY_SECRET_KEY),
       HERMES_SLACK_INBOUND_ARTIFACT_REPO: config.slackInboundArtifactRepo,
       HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS: String(cleanup.retentionDays),
       HERMES_ARTIFACT_CLEANUP_PREFIX: cleanup.prefix,
       HERMES_ARTIFACT_CLEANUP_DRY_RUN: "false"
     }
   };
+  if (cleanup.failureAlert) {
+    manifest.alerts = [{
+      notification_target: cleanup.failureAlert,
+      on_start: false,
+      on_completion: false,
+      on_failure: true
+    }];
+  }
+  return manifest;
 }
 
 export function executorServiceManifest(config) {
@@ -824,6 +878,7 @@ async function fetchSecretValue(secretId) {
 function defaultSecretValue(key, tfyApiKey) {
   if (key === "TFY-API-KEY") return tfyApiKey || SECRET_PLACEHOLDER_TFY;
   if (key === DAYTONA_SECRET_KEY) return SECRET_PLACEHOLDER_DAYTONA;
+  if (key === ARTIFACT_CLEANUP_TFY_SECRET_KEY) return SECRET_PLACEHOLDER_TFY;
   if (key.startsWith("SLACK-")) return SECRET_PLACEHOLDER_SLACK;
   return SECRET_PLACEHOLDER_TFY;
 }

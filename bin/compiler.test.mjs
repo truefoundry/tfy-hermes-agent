@@ -172,6 +172,10 @@ test("requiredSecretKeys adds DAYTONA-API-KEY for truefoundry-service backend", 
   assert.ok(requiredSecretKeys(fakeConfig({
     executor: { backend: "truefoundry-service" }
   })).includes("DAYTONA-API-KEY"));
+  assert.ok(requiredSecretKeys(fakeConfig({
+    slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
+    slackInboundArtifactCleanup: { enabled: true }
+  })).includes("HERMES-ARTIFACT-CLEANUP-TFY-API-KEY"));
 });
 
 test("daytonaPlatformEnv exposes platform-owned defaults", () => {
@@ -278,12 +282,28 @@ test("normalizeSlackInboundArtifactCleanup defaults to weekly cleanup when artif
     retentionDays: 7,
     schedule: "0 2 * * 0",
     prefix: "slack-run_",
-    timezone: "UTC"
+    timezone: "UTC",
+    failureAlert: null
   });
   assert.equal(normalizeSlackInboundArtifactCleanup(false, { enabledByDefault: true }).enabled, false);
+  assert.deepEqual(normalizeSlackInboundArtifactCleanup({
+    failure_alert: {
+      type: "email",
+      notification_channel: "tfy-eo:notification-channel:ops-email",
+      to_emails: ["ops@example.com"]
+    }
+  }, { enabledByDefault: true }).failureAlert, {
+    type: "email",
+    notification_channel: "tfy-eo:notification-channel:ops-email",
+    to_emails: ["ops@example.com"]
+  });
   assert.throws(
     () => normalizeSlackInboundArtifactCleanup({ retention_days: 0 }, { enabledByDefault: true }),
     /retention_days/
+  );
+  assert.throws(
+    () => normalizeSlackInboundArtifactCleanup({ failure_alert: { type: "email", notification_channel: "ops-email" } }, { enabledByDefault: true }),
+    /to_emails/
   );
 });
 
@@ -309,10 +329,40 @@ test("artifactCleanupManifest builds a weekly cleanup job for Slack inbound arti
   assert.equal(manifest.concurrency_limit, 1);
   assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.controller");
   assert.equal(manifest.image.build_spec.command, "node controller/artifact-cleanup.mjs");
+  assert.equal(manifest.alerts, undefined);
+  assert.match(manifest.env.TFY_API_KEY, /HERMES-ARTIFACT-CLEANUP-TFY-API-KEY/);
   assert.equal(manifest.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO, "hermes-inbound-artifacts-prod");
   assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS, "7");
   assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_PREFIX, "slack-run_");
   assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_DRY_RUN, "false");
+});
+
+test("artifactCleanupManifest emits failure alerts only when configured", () => {
+  const manifest = artifactCleanupManifest(fakeConfig({
+    slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
+    slackInboundArtifactCleanup: {
+      enabled: true,
+      retentionDays: 7,
+      schedule: "0 2 * * 0",
+      prefix: "slack-run_",
+      timezone: "UTC",
+      failureAlert: {
+        type: "email",
+        notification_channel: "tfy-eo:notification-channel:ops-email",
+        to_emails: ["ops@example.com"]
+      }
+    }
+  }));
+  assert.deepEqual(manifest.alerts, [{
+    notification_target: {
+      type: "email",
+      notification_channel: "tfy-eo:notification-channel:ops-email",
+      to_emails: ["ops@example.com"]
+    },
+    on_start: false,
+    on_completion: false,
+    on_failure: true
+  }]);
 });
 
 test("planManifests defaults to volume + controller + executor and never emits secrets unless asked", () => {
@@ -443,7 +493,8 @@ test("checked-in tfy-eo test agent example stays deployable", async () => {
     retentionDays: 7,
     schedule: "0 2 * * 0",
     prefix: "slack-run_",
-    timezone: "UTC"
+    timezone: "UTC",
+    failureAlert: null
   });
 
   const planned = planManifests(parsed, { includeSecrets: false });

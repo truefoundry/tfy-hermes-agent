@@ -113,7 +113,7 @@ No Socket Mode. No Slack user groups.
 
 ### 4. Deploy
 
-No separate SecretGroup step. `deploy` auto-creates the group via API, sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` (from `credentials.json` or env). For Slack, paste tokens from step 3 into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` after deploy — the only manual secret step.
+No separate SecretGroup step. `deploy` auto-creates the group via API, sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` (from `credentials.json` or env). For Slack, paste tokens from step 3 into `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` after deploy. If Slack artifact cleanup is enabled, set `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` to a virtual-account token scoped to the inbound artifact ML repo.
 
 Preview (compile only):
 
@@ -210,6 +210,8 @@ mcp_servers:
 | `slack.allowed_channels` | no | Omitted = all channels; `init` prompts |
 | `slack.allowed_users` | no | Omitted = all users; `init` prompts |
 | `slack_team_id` | no | Pin Slack workspace; `init` prompts |
+| `slack_inbound_artifact_repo` | no | ML repo for Slack file uploads |
+| `slack_inbound_artifact_cleanup` | no | Cleanup schedule and retention for Slack artifact versions; optional `failure_alert` requires an existing notification-channel integration FQN |
 | `skills` | no | Version-pinned `agent-skill:…:N` FQNs; `init` prompts |
 | `mcp_servers` | no | MCP Gateway URLs; `init` prompts |
 | `executor` | no | `init` prompts: `truefoundry-job` (default; omit field) or `truefoundry-service` |
@@ -225,6 +227,7 @@ No standalone SecretGroup step. `deploy` runs `ensureSecretGroup` via API first:
 | `HERMES-RUN-TOKEN-SECRET` | `deploy` from `agents/<name>/.hermes-secrets.local` or generated |
 | `SLACK-BOT-TOKEN` | User after deploy (from Slack app) — placeholders until then |
 | `SLACK-SIGNING-SECRET` | User after deploy (from Slack app) — placeholders until then |
+| `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` | User/operator when `slack_inbound_artifact_repo` cleanup is enabled; prefer a virtual-account token scoped to that ML repo |
 | `DAYTONA-API-KEY` | User after deploy when `executor: truefoundry-service` — placeholder until then |
 
 Hyphens only in secret key names.
@@ -250,6 +253,7 @@ Controller and executor manifests embed `tfy-secret://` references to the Secret
 | `/slack/*` | Signature HMAC | `SLACK-SIGNING-SECRET` |
 | Slack outbound | Bot token | `SLACK-BOT-TOKEN` |
 | LLM (executor) | Gateway bearer | `TFY-API-KEY` |
+| Slack artifact cleanup job | Scoped TrueFoundry bearer | `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` |
 
 ## Health Checks
 

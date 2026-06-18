@@ -29,7 +29,7 @@ resources:
   ephemeral_storage_limit: 2000
 env:
   TFY_HOST: https://tfy-eo.truefoundry.cloud
-  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-ARTIFACT-CLEANUP-TFY-API-KEY
   HERMES_SLACK_INBOUND_ARTIFACT_REPO: hermes-inbound-artifacts-prod
   HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS: "7"
   HERMES_ARTIFACT_CLEANUP_PREFIX: slack-run_
