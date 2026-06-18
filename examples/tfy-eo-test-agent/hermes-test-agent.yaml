@@ -2,7 +2,7 @@ name: hermes-test-agent
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 host: https://hermes-test-agent-sai-ws.ml.tfy-eo.truefoundry.cloud
 description: Reusable Hermes test agent for validating Slack and API features on tfy-eo.
-version: 8f5cad3b39c027d22182a69398a85d89506fbc47
+version: 4b3c5a638691604b109c6ef84601cbc6d8043579
 instructions: |
   You are the reusable TrueFoundry Hermes test agent.
   Keep responses concise and operational.
