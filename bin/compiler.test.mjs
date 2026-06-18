@@ -130,6 +130,20 @@ test("secretGroupNeedsUpdate is false when required keys and run token are valid
   assert.equal(secretGroupNeedsUpdate(fakeConfig(), entries, validRunToken), false);
 });
 
+test("secretGroupNeedsUpdate refreshes TFY-API-KEY from current deploy credentials", () => {
+  const validRunToken = "a".repeat(32);
+  const entries = requiredSecretKeys(fakeConfig()).map((key) => ({ key }));
+
+  assert.equal(
+    secretGroupNeedsUpdate(fakeConfig(), entries, validRunToken, "old-token", "new-token"),
+    true
+  );
+  assert.equal(
+    secretGroupNeedsUpdate(fakeConfig(), entries, validRunToken, "same-token", "same-token"),
+    false
+  );
+});
+
 test("generateRunTokenSecret returns 64 hex chars (32 bytes)", () => {
   const secret = generateRunTokenSecret();
   assert.match(secret, /^[0-9a-f]{64}$/);

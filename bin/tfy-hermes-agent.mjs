@@ -998,8 +998,16 @@ function missingRequiredSecretKeys(config, entries) {
   return requiredSecretKeys(config).filter((key) => !keys.has(key));
 }
 
-function secretGroupNeedsUpdate(config, entries, currentRunTokenValue) {
-  return runTokenNeedsWrite(currentRunTokenValue) || missingRequiredSecretKeys(config, entries).length > 0;
+function tfyApiKeyNeedsWrite(currentValue, desiredValue) {
+  const desired = String(desiredValue || "").trim();
+  if (!desired) return false;
+  return String(currentValue || "").trim() !== desired;
+}
+
+function secretGroupNeedsUpdate(config, entries, currentRunTokenValue, currentTfyApiKeyValue, desiredTfyApiKeyValue) {
+  return runTokenNeedsWrite(currentRunTokenValue)
+    || missingRequiredSecretKeys(config, entries).length > 0
+    || tfyApiKeyNeedsWrite(currentTfyApiKeyValue, desiredTfyApiKeyValue);
 }
 
 async function readHermesSecretsLocal(hermesFile) {
@@ -1056,6 +1064,10 @@ async function buildSecretsPayloadForPut(config, entries, runToken, tfyApiKey) {
       payload.push({ key, value: runToken });
       continue;
     }
+    if (key === "TFY-API-KEY" && tfyApiKey) {
+      payload.push({ key, value: tfyApiKey });
+      continue;
+    }
     const entry = byKey.get(key);
     if (entry?.id) {
       const value = await fetchSecretValue(entry.id);
@@ -1105,15 +1117,17 @@ async function ensureSecretGroup(config, hermesFile, { skipLiveChecks }) {
   const entries = await listSecretEntries(groupId);
   const byKey = new Map(entries.map((entry) => [entry.key || entry.name, entry]));
   const hermesEntry = byKey.get("HERMES-RUN-TOKEN-SECRET");
+  const tfyEntry = byKey.get("TFY-API-KEY");
   const currentRunToken = hermesEntry?.id ? await fetchSecretValue(hermesEntry.id) : null;
-  if (!secretGroupNeedsUpdate(config, entries, currentRunToken)) return;
+  const currentTfyApiKey = tfyEntry?.id ? await fetchSecretValue(tfyEntry.id) : null;
+  if (!secretGroupNeedsUpdate(config, entries, currentRunToken, currentTfyApiKey, tfyApiKey)) return;
 
   const payload = await buildSecretsPayloadForPut(config, entries, runToken, tfyApiKey);
   await tfyFetch(`/api/svc/v1/secret-groups/${encodeURIComponent(groupId)}`, {
     method: "PUT",
     body: JSON.stringify({ secrets: payload })
   });
-  console.log(`set HERMES-RUN-TOKEN-SECRET in SecretGroup ${config.secrets}`);
+  console.log(`updated SecretGroup ${config.secrets}`);
 }
 
 async function checkCollisions(config, allowUpdate) {
