@@ -11,6 +11,7 @@ import test from "node:test";
 import YAML from "yaml";
 
 import {
+  artifactCleanupManifest,
   controllerManifest,
   executorManifest,
   executorServiceManifest,
@@ -23,6 +24,7 @@ import {
   normalizeExecutorConfig,
   normalizeExecutorBackend,
   normalizeTerminalConfig,
+  normalizeSlackInboundArtifactCleanup,
   initExecutorYamlFields,
   daytonaPlatformEnv,
   DEFAULT_HERMES_DAYTONA_SNAPSHOT,
@@ -270,6 +272,42 @@ test("controllerManifest omits HERMES_SLACK_INBOUND_ARTIFACT_REPO when unset", (
   assert.equal(manifest.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO, undefined);
 });
 
+test("normalizeSlackInboundArtifactCleanup defaults to weekly cleanup when artifact repo is set", () => {
+  assert.deepEqual(normalizeSlackInboundArtifactCleanup(null, { enabledByDefault: true }), {
+    enabled: true,
+    retentionDays: 7,
+    schedule: "0 2 * * 0",
+    prefix: "slack-run_"
+  });
+  assert.equal(normalizeSlackInboundArtifactCleanup(false, { enabledByDefault: true }).enabled, false);
+  assert.throws(
+    () => normalizeSlackInboundArtifactCleanup({ retention_days: 0 }, { enabledByDefault: true }),
+    /retention_days/
+  );
+});
+
+test("artifactCleanupManifest builds a weekly cleanup job for Slack inbound artifacts", () => {
+  const manifest = artifactCleanupManifest(fakeConfig({
+    slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
+    slackInboundArtifactCleanup: {
+      enabled: true,
+      retentionDays: 7,
+      schedule: "0 2 * * 0",
+      prefix: "slack-run_"
+    }
+  }));
+  assert.equal(manifest.type, "job");
+  assert.equal(manifest.name, "devrel-assistant-artifact-cleanup");
+  assert.deepEqual(manifest.trigger, { type: "cron", schedule: "0 2 * * 0" });
+  assert.equal(manifest.concurrency_limit, 1);
+  assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.controller");
+  assert.equal(manifest.image.build_spec.command, "node controller/artifact-cleanup.mjs");
+  assert.equal(manifest.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO, "hermes-inbound-artifacts-prod");
+  assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS, "7");
+  assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_PREFIX, "slack-run_");
+  assert.equal(manifest.env.HERMES_ARTIFACT_CLEANUP_DRY_RUN, "false");
+});
+
 test("planManifests defaults to volume + controller + executor and never emits secrets unless asked", () => {
   const list = planManifests(fakeConfig(), { includeSecrets: false });
   const filenames = list.map((item) => item.filename);
@@ -282,6 +320,17 @@ test("planManifests defaults to volume + controller + executor and never emits s
   for (const filename of filenames) {
     assert.doesNotMatch(filename, /snapshotter|state/);
   }
+});
+
+test("planManifests adds artifact cleanup only when Slack artifact cleanup is enabled", () => {
+  assert.ok(!planManifests(fakeConfig({
+    slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
+    slackInboundArtifactCleanup: { enabled: false }
+  }), { includeSecrets: false }).some((item) => item.filename.endsWith("-artifact-cleanup.yaml")));
+  assert.ok(planManifests(fakeConfig({
+    slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
+    slackInboundArtifactCleanup: { enabled: true, retentionDays: 7, schedule: "0 2 * * 0", prefix: "slack-run_" }
+  }), { includeSecrets: false }).some((item) => item.filename.endsWith("-artifact-cleanup.yaml")));
 });
 
 test("planManifests with includeSecrets prepends the scaffold SecretGroup", () => {
@@ -355,6 +404,7 @@ test("readHermesConfig validates and normalizes the example agent config", async
     assert.deepEqual(parsed.skills, ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"]);
     assert.deepEqual(parsed.slack.allowedChannels, ["C0123456789"]);
     assert.deepEqual(parsed.slack.allowedUsers, ["U0123456789"]);
+    assert.equal(parsed.slackInboundArtifactCleanup.enabled, false);
     // sanity-check that the parsed config flows through the manifest builders.
     const controller = controllerManifest(parsed);
     assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:devrel-assistant-hermes-secrets:TFY-API-KEY");
@@ -380,12 +430,20 @@ test("checked-in tfy-eo test agent example stays deployable", async () => {
   assert.equal(parsed.model, "openai-main/gpt-5.5");
   assert.equal(parsed.secrets, "hermes-test-agent-secrets");
   assert.equal(parsed.executor.backend, "truefoundry-job");
+  assert.equal(parsed.slackInboundArtifactRepo, "hermes-inbound-artifacts-prod");
+  assert.deepEqual(parsed.slackInboundArtifactCleanup, {
+    enabled: true,
+    retentionDays: 7,
+    schedule: "0 2 * * 0",
+    prefix: "slack-run_"
+  });
 
   const planned = planManifests(parsed, { includeSecrets: false });
   assert.deepEqual(planned.map((item) => item.filename), [
     "hermes-test-agent-volume.yaml",
     "hermes-test-agent-controller.yaml",
-    "hermes-test-agent-executor.yaml"
+    "hermes-test-agent-executor.yaml",
+    "hermes-test-agent-artifact-cleanup.yaml"
   ]);
 
   const controller = planned.find((item) => item.filename.endsWith("-controller.yaml")).manifest;

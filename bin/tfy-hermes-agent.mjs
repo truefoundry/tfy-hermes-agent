@@ -14,6 +14,9 @@ const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
 const DEFAULT_VOLUME_SIZE_GI = 10;
+const DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS = 7;
+const DEFAULT_ARTIFACT_CLEANUP_SCHEDULE = "0 2 * * 0";
+const DEFAULT_ARTIFACT_CLEANUP_PREFIX = "slack-run_";
 // TrueFoundry SecretGroup key names must be alphanumeric, dots, or hyphens —
 // underscores are rejected by the platform. Env-var names with underscores are
 // fine; the controller/executor manifests do the mapping from hyphenated
@@ -343,6 +346,45 @@ function normalizeSlackAccess(value) {
   return { allowedChannels, allowedUsers };
 }
 
+export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }) {
+  const defaults = {
+    enabled: Boolean(enabledByDefault),
+    retentionDays: DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS,
+    schedule: DEFAULT_ARTIFACT_CLEANUP_SCHEDULE,
+    prefix: DEFAULT_ARTIFACT_CLEANUP_PREFIX
+  };
+  if (value == null) return defaults;
+  if (typeof value === "boolean") return { ...defaults, enabled: value };
+  assertObject(value, "slack_inbound_artifact_cleanup");
+  const allowed = new Set(["enabled", "retention_days", "schedule", "prefix"]);
+  const extra = Object.keys(value).filter((key) => !allowed.has(key));
+  if (extra.length) throw new Error(`slack_inbound_artifact_cleanup has unsupported keys: ${extra.join(", ")}`);
+
+  const retentionDays = value.retention_days == null
+    ? defaults.retentionDays
+    : Number(value.retention_days);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
+    throw new Error("slack_inbound_artifact_cleanup.retention_days must be an integer between 1 and 365");
+  }
+
+  const schedule = String(value.schedule || defaults.schedule).trim();
+  if (schedule.split(/\s+/).length !== 5) {
+    throw new Error("slack_inbound_artifact_cleanup.schedule must be a 5-field cron expression");
+  }
+
+  const prefix = String(value.prefix || defaults.prefix).trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(prefix)) {
+    throw new Error("slack_inbound_artifact_cleanup.prefix must use only letters, numbers, underscores, and hyphens");
+  }
+
+  return {
+    enabled: value.enabled == null ? defaults.enabled : Boolean(value.enabled),
+    retentionDays,
+    schedule,
+    prefix
+  };
+}
+
 export async function readHermesConfig(file) {
   if (!file) throw new Error("missing hermes.yaml path");
   const config = YAML.parse(await readFile(file, "utf8"));
@@ -366,6 +408,14 @@ export async function readHermesConfig(file) {
   }
   const executor = normalizeExecutorConfig(config.executor);
   const terminal = normalizeTerminalConfig(executor.backend, config.terminal);
+  const slackInboundArtifactRepo = String(config.slack_inbound_artifact_repo || "").trim();
+  const slackInboundArtifactCleanup = normalizeSlackInboundArtifactCleanup(
+    config.slack_inbound_artifact_cleanup,
+    { enabledByDefault: Boolean(slackInboundArtifactRepo) }
+  );
+  if (slackInboundArtifactCleanup.enabled && !slackInboundArtifactRepo) {
+    throw new Error("slack_inbound_artifact_cleanup requires slack_inbound_artifact_repo");
+  }
 
   return {
     name,
@@ -381,7 +431,8 @@ export async function readHermesConfig(file) {
     slackTeamId: String(config.slack_team_id || "").trim(),
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl),
-    slackInboundArtifactRepo: String(config.slack_inbound_artifact_repo || "").trim(),
+    slackInboundArtifactRepo,
+    slackInboundArtifactCleanup,
     version,
     executor,
     terminal
@@ -392,7 +443,8 @@ function resourceNames(config) {
   return {
     volume: `${config.name}-data`,
     controller: `${config.name}-controller`,
-    executor: `${config.name}-executor`
+    executor: `${config.name}-executor`,
+    artifactCleanup: `${config.name}-artifact-cleanup`
   };
 }
 
@@ -542,6 +594,35 @@ export function executorManifest(config) {
     image: buildImage(config, "Dockerfile.executor", "node executor/executor.mjs"),
     resources: executorResources(),
     env: executorEnv(config)
+  };
+}
+
+export function artifactCleanupManifest(config) {
+  if (!config.slackInboundArtifactRepo) {
+    throw new Error("artifact cleanup job requires slack_inbound_artifact_repo");
+  }
+  const cleanup = config.slackInboundArtifactCleanup || normalizeSlackInboundArtifactCleanup(null, { enabledByDefault: true });
+  return {
+    name: resourceNames(config).artifactCleanup,
+    type: "job",
+    workspace_fqn: config.workspaceFqn,
+    trigger: { type: "cron", schedule: cleanup.schedule },
+    concurrency_limit: 1,
+    retries: 1,
+    image: buildImage(config, "Dockerfile.controller", "node controller/artifact-cleanup.mjs"),
+    resources: {
+      cpu_request: 0.1, cpu_limit: 0.5,
+      memory_request: 256, memory_limit: 512,
+      ephemeral_storage_request: 1000, ephemeral_storage_limit: 2000
+    },
+    env: {
+      TFY_HOST: controlPlaneUrl(config),
+      TFY_API_KEY: secretRef(config, "TFY-API-KEY"),
+      HERMES_SLACK_INBOUND_ARTIFACT_REPO: config.slackInboundArtifactRepo,
+      HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS: String(cleanup.retentionDays),
+      HERMES_ARTIFACT_CLEANUP_PREFIX: cleanup.prefix,
+      HERMES_ARTIFACT_CLEANUP_DRY_RUN: "false"
+    }
   };
 }
 
@@ -845,6 +926,9 @@ export function planManifests(config, { includeSecrets }) {
     list.push({ filename: `${config.name}-executor.yaml`, manifest: executorManifest(config) });
   } else if (config.executor.backend === "truefoundry-service") {
     list.push({ filename: `${config.name}-executor.yaml`, manifest: executorServiceManifest(config) });
+  }
+  if (config.slackInboundArtifactRepo && config.slackInboundArtifactCleanup?.enabled) {
+    list.push({ filename: `${config.name}-artifact-cleanup.yaml`, manifest: artifactCleanupManifest(config) });
   }
   return list;
 }

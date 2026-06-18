@@ -29,19 +29,23 @@ import {
   agentLabel,
   chunkText,
   createSlackClient,
+  createSlackProgressState,
   formatObserverProgress,
   handleFromString,
   listFromEnv,
   normalizeSlackChannelIds,
   normalizeSlackUserIds,
+  observerProgressChunks,
   normalizeSlackFiles,
   parseMessageHandle,
   slackChannelAccess,
   slackFeedbackBlocks,
   slackMessageClaimKey,
   slackMessageEventAllowed,
+  SLACK_PLAN_TASKS,
   slackPrompt,
   slackTaskDetails,
+  slackTaskUpdate,
   slackTitle
 } from "./slack.mjs";
 import { ingestSlackFilesToArtifacts } from "./slack-ingest.mjs";
@@ -574,6 +578,8 @@ function streamRunText({ runId, timeoutMs, onDelta, isAborted = () => false }) {
 function streamRunToSlack({ runId, channel, ts, timeoutMs }) {
   let streamedText = "";
   let progressCount = 0;
+  let responseStarted = false;
+  const progressState = createSlackProgressState();
   const onRow = (row) => {
     let payload;
     try { payload = JSON.parse(row.payload); } catch { return; }
@@ -581,25 +587,43 @@ function streamRunToSlack({ runId, channel, ts, timeoutMs }) {
       const text = typeof payload?.text === "string" ? payload.text : "";
       if (!text) return;
       streamedText += text;
+      if (!responseStarted) {
+        responseStarted = true;
+        slack.appendStream({
+          channel,
+          ts,
+          chunks: [slackTaskUpdate({
+            id: SLACK_PLAN_TASKS.response,
+            title: "Write response",
+            status: "in_progress",
+            details: "Streaming answer"
+          })]
+        }).catch((error) => {
+          console.error(`appendSlackStream response progress failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       for (const piece of chunkText(text)) {
         slack.appendStream({ channel, ts, markdownText: piece }).catch((error) => {
           console.error(`appendSlackStream failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
     } else if (row.type === "hermes_observer") {
-      const line = formatObserverProgress(payload);
-      if (!line) return;
-      progressCount += 1;
+      const chunks = observerProgressChunks(payload, progressState);
+      if (!chunks.length) {
+        const line = formatObserverProgress(payload);
+        if (!line) return;
+        chunks.push(slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.activity,
+          title: "Executor activity",
+          status: "in_progress",
+          details: line
+        }));
+      }
+      progressCount += chunks.length;
       slack.appendStream({
         channel,
         ts,
-        chunks: [{
-          type: "task_update",
-          id: "hermes_turn",
-          title: "Hermes activity",
-          status: "in_progress",
-          details: slackTaskDetails([line])
-        }]
+        chunks
       }).catch((error) => {
         console.error(`appendSlackStream progress failed: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -697,7 +721,7 @@ async function handleSlackUserMessage(payload) {
   const hermesSessionId = ensureSessionForSlackThread({ teamId, channel, threadTs });
   const label = agentSlackLabel(agent);
   const taskUpdate = (status, details) => ({
-    type: "task_update", id: "hermes_turn", title: `Run ${label}`, status,
+    type: "task_update", id: SLACK_PLAN_TASKS.executor, title: "Start executor", status,
     details: slackTaskDetails(details)
   });
 
@@ -711,7 +735,13 @@ async function handleSlackUserMessage(payload) {
     }).catch(() => {});
     await slack.setStatus({ channel, threadTs });
     stream = await slack.startStream({
-      channel, threadTs, teamId, userId: event.user, agent, fallbackHandle: defaultAgentHandle
+      channel,
+      threadTs,
+      teamId,
+      userId: event.user,
+      agent,
+      fallbackHandle: defaultAgentHandle,
+      hasAttachments: slackFiles.length > 0
     });
     const ts = stream.ts;
     const closeWith = async ({ markdownText, blocks }) => {
@@ -738,6 +768,16 @@ async function handleSlackUserMessage(payload) {
 
     let attachments = [];
     if (slackFiles.length) {
+      await slack.appendStream({
+        channel,
+        ts,
+        chunks: [slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.attachments,
+          title: "Prepare attachments",
+          status: "in_progress",
+          details: `Downloading ${slackFiles.length} file${slackFiles.length === 1 ? "" : "s"}`
+        })]
+      });
       await slack.setStatus({
         channel,
         threadTs,
@@ -752,6 +792,16 @@ async function handleSlackUserMessage(payload) {
         tfyApiKey: TFY_API_KEY,
         stateRoot: STATE_ROOT,
         slackApi: slack.api.bind(slack)
+      });
+      await slack.appendStream({
+        channel,
+        ts,
+        chunks: [slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.attachments,
+          title: "Prepare attachments",
+          status: "complete",
+          details: `Prepared ${attachments.length} file${attachments.length === 1 ? "" : "s"}`
+        })]
       });
       await slack.setStatus({ channel, threadTs }).catch(() => {});
     }
@@ -776,13 +826,25 @@ async function handleSlackUserMessage(payload) {
 
     await slack.appendStream({
       channel, ts,
-      chunks: [taskUpdate(dispatchFailed ? "error" : "in_progress", [
-        "Request received",
-        "Slack stream opened",
-        dispatchFailed
-          ? `Failed to dispatch: ${dispatched.run.error || ""}`.slice(0, 256)
-          : "Executor job queued"
-      ])]
+      chunks: [
+        slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.request,
+          title: "Understand request",
+          status: "complete",
+          details: "Slack message parsed"
+        }),
+        taskUpdate(dispatchFailed ? "error" : "complete", [
+          dispatchFailed
+            ? `Failed to dispatch: ${dispatched.run.error || ""}`.slice(0, 256)
+            : "Executor job queued"
+        ]),
+        slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.response,
+          title: "Write response",
+          status: dispatchFailed ? "error" : "pending",
+          details: dispatchFailed ? "No response generated" : "Waiting for Hermes output"
+        })
+      ]
     });
 
     if (dispatchFailed) {
@@ -801,7 +863,20 @@ async function handleSlackUserMessage(payload) {
           : "Hermes run failed");
       await slack.appendStream({
         channel, ts,
-        chunks: [taskUpdate("error", [`Failed: ${errorMessage.slice(0, 256)}`])]
+        chunks: [
+          slackTaskUpdate({
+            id: SLACK_PLAN_TASKS.activity,
+            title: "Executor activity",
+            status: "error",
+            details: `Failed: ${errorMessage.slice(0, 256)}`
+          }),
+          slackTaskUpdate({
+            id: SLACK_PLAN_TASKS.response,
+            title: "Write response",
+            status: "error",
+            details: "No final answer"
+          })
+        ]
       });
       return closeWith({
         markdownText: `I couldn't finish that request: ${errorMessage}`,
@@ -810,14 +885,39 @@ async function handleSlackUserMessage(payload) {
     }
 
     for (const chunk of chunkText(finalSlackRemainder(streamed.streamedText, streamed.run.result))) {
+      if (!streamed.streamedText) {
+        await slack.appendStream({
+          channel,
+          ts,
+          chunks: [slackTaskUpdate({
+            id: SLACK_PLAN_TASKS.response,
+            title: "Write response",
+            status: "in_progress",
+            details: "Streaming final answer"
+          })]
+        });
+      }
       await slack.appendStream({ channel, ts, markdownText: chunk });
       if (SLACK_STREAM_CHUNK_DELAY_MS > 0) await sleep(SLACK_STREAM_CHUNK_DELAY_MS);
     }
     await slack.appendStream({
       channel, ts,
-      chunks: [taskUpdate("complete", [streamed.progressCount
-        ? "Completed"
-        : "Completed; no Hermes tool events emitted"])]
+      chunks: [
+        slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.activity,
+          title: "Executor activity",
+          status: "complete",
+          details: streamed.progressCount
+            ? "Executor activity finished"
+            : "No executor activity emitted"
+        }),
+        slackTaskUpdate({
+          id: SLACK_PLAN_TASKS.response,
+          title: "Write response",
+          status: "complete",
+          details: "Reply ready"
+        })
+      ]
     });
     return closeWith({ blocks: slackFeedbackBlocks(streamed.run.id) });
   } catch (error) {

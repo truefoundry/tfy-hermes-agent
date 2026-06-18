@@ -23,13 +23,14 @@ Keep the conversation moving one missing input or one manual task at a time.
   └── deployments/                # compiled TF manifests (written by deploy)
       ├── <name>-volume.yaml
       ├── <name>-controller.yaml
-      └── <name>-executor.yaml
+      ├── <name>-executor.yaml
+      └── <name>-artifact-cleanup.yaml # only when slack_inbound_artifact_repo is set
   ```
 
-- **Generated output:** `deploy` compiles to `agents/<name>/deployments/` and runs `tfy apply -f` on each file in order (volume → controller → executor). Pass `--emit-manifests <dir>` to write elsewhere. **SecretGroup is provisioned via API, not as a deployments file.**
+- **Generated output:** `deploy` compiles to `agents/<name>/deployments/` and runs `tfy apply -f` on each file in order (volume → controller → executor, plus artifact cleanup when Slack artifact storage is enabled). Pass `--emit-manifests <dir>` to write elsewhere. **SecretGroup is provisioned via API, not as a deployments file.**
 - **Architecture:** Slack deployments use one Slack app per agent; API-only (`init --api-only`) skips Slack. Both paths use a `secrets` SecretGroup (`deploy` auto-creates if missing) and three TrueFoundry resources — `volume` (RWO PVC mounted at /data on the controller), `controller` (Service), and `executor` (Job for `truefoundry-job`, or internal Service for `truefoundry-service` + Daytona terminal sandbox). State durability is the controller's RWO `/data` volume; offsite snapshotting is out of scope for the deployed stack.
 - **Slack transport:** HTTP Events API and Interactivity only. Do not use Socket Mode, WebSockets, slash commands, Slack user groups, or Slack OAuth.
-- **Slack files:** The controller downloads Slack files with the bot token, uploads them to TrueFoundry Artifacts, and passes artifact read URLs to the executor. The executor downloads files into its workspace before Hermes starts. Images are passed as Hermes image inputs; other file types are referenced in the prompt by `local_path`.
+- **Slack files:** The controller downloads Slack files with the bot token, uploads them to TrueFoundry Artifacts, and passes artifact read URLs to the executor. The executor downloads files into its workspace before Hermes starts. Images are passed as Hermes image inputs; other file types are referenced in the prompt by `local_path`. When `slack_inbound_artifact_repo` is configured, the generated stack includes a weekly artifact cleanup job that deletes only old Hermes Slack run artifacts.
 - **Secrets:** never ask the user to paste raw Slack tokens, signing secrets, TrueFoundry API keys, or the HERMES run-token secret into chat. `deploy` sets `HERMES-RUN-TOKEN-SECRET` (from `agents/<name>/.hermes-secrets.local`) and `TFY-API-KEY` automatically. For Slack, the user pastes bot token + signing secret into the SecretGroup UI after deploy — the only manual secret step.
 - **Deployment gate:** `deploy` calls `ensureSecretGroup` (API) then runs live validation unless `--skip-live-checks` is passed. There is no separate `validate` command.
 

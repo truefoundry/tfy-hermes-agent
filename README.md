@@ -162,7 +162,7 @@ tfy-hermes-agent deploy <name>
 # or: tfy-hermes-agent deploy agents/<name>/<name>.yaml
 ```
 
-`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order (volume → controller → executor).
+`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order (volume → controller → executor, plus artifact cleanup when Slack artifact storage is enabled).
 
 Flags:
 
@@ -184,6 +184,8 @@ Invite the bot to channels where it should respond.
 Slack file messages are accepted through the HTTP Events API. The controller downloads Slack files with the bot token, uploads them to a TrueFoundry Artifact version, and sends artifact read URLs to the executor. The executor downloads those artifacts into its workspace before Hermes starts.
 
 Image attachments are passed to Hermes as image inputs using their local workspace paths. Other file types are made available in the executor workspace and referenced in the prompt with `local_path`.
+
+When `slack_inbound_artifact_repo` is set, deploy also emits a weekly `<name>-artifact-cleanup` TrueFoundry job. By default it deletes only Hermes Slack run artifacts older than 7 days (`slack-run_…` names with Slack run metadata), leaving unrelated artifacts in the repo untouched.
 
 ### 5. Verify
 
@@ -217,6 +219,11 @@ slack:
   allowed_channels: [C0123456789]
   allowed_users: [U0123456789]
 slack_team_id: T0123456789
+slack_inbound_artifact_repo: hermes-inbound-artifacts-prod
+slack_inbound_artifact_cleanup:
+  enabled: true
+  retention_days: 7
+  schedule: "0 2 * * 0"
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
 mcp_servers:
@@ -237,6 +244,8 @@ mcp_servers:
 | `slack.allowed_channels` | no | Slack channel/group/DM IDs. Empty or omitted = all channels the bot is in. `init` prompts. |
 | `slack.allowed_users` | no | Slack user IDs. Empty or omitted = all users. `init` prompts. |
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
+| `slack_inbound_artifact_repo` | no | ML repo name or `tfy-mlrepo://` FQN for Slack file uploads. Required if users will send Slack attachments. |
+| `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention and weekly cron `0 2 * * 0`. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
 | `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. `init` prompts; job default omitted from yaml. |

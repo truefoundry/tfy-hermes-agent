@@ -87,8 +87,84 @@ export function chunkText(text, size = 3500) {
   return chunks;
 }
 
+const SLACK_TASK_TEXT_LIMIT = 256;
+
+export const SLACK_PLAN_TASKS = Object.freeze({
+  request: "hermes_request",
+  attachments: "hermes_attachments",
+  executor: "hermes_executor",
+  model: "hermes_model",
+  activity: "hermes_activity",
+  response: "hermes_response"
+});
+
+function truncateTaskText(value, limit = SLACK_TASK_TEXT_LIMIT) {
+  const text = String(value || "").replace(/\s+\n/g, "\n").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3)).trimEnd()}...`;
+}
+
 export function slackTaskDetails(lines) {
-  return `\n${lines.filter(Boolean).join("\n")}`;
+  return truncateTaskText(lines.filter(Boolean).join("\n"));
+}
+
+export function slackPlanUpdate(title) {
+  return {
+    type: "plan_update",
+    title: truncateTaskText(title)
+  };
+}
+
+export function slackTaskUpdate({ id, title, status, details = null, output = null, sources = null }) {
+  const chunk = {
+    type: "task_update",
+    id,
+    title: truncateTaskText(title),
+    status
+  };
+  if (details) chunk.details = Array.isArray(details) ? slackTaskDetails(details) : truncateTaskText(details);
+  if (output) chunk.output = truncateTaskText(output);
+  if (Array.isArray(sources) && sources.length) chunk.sources = sources;
+  return chunk;
+}
+
+export function slackInitialPlanChunks({ agent, fallbackHandle, hasAttachments = false }) {
+  return [
+    slackPlanUpdate(`Run ${agentLabel(agent, fallbackHandle)}`),
+    slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.request,
+      title: "Understand request",
+      status: "in_progress",
+      details: "Reading the Slack message"
+    }),
+    hasAttachments ? slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.attachments,
+      title: "Prepare attachments",
+      status: "pending",
+      details: "Waiting to download files"
+    }) : null,
+    slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.executor,
+      title: "Start executor",
+      status: "pending",
+      details: "Waiting to queue Hermes"
+    }),
+    slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.model,
+      title: "Think with model",
+      status: "pending"
+    }),
+    slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.activity,
+      title: "Executor activity",
+      status: "pending"
+    }),
+    slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.response,
+      title: "Write response",
+      status: "pending"
+    })
+  ].filter(Boolean);
 }
 
 export function slackMessageClaimKey({ teamId, channel, ts, userId }) {
@@ -204,6 +280,9 @@ function formatToolArgs(args) {
   const keys = Object.keys(args).filter((key) => args[key] !== undefined).slice(0, 4);
   if (!keys.length) return "";
   const parts = keys.map((key) => {
+    if (/(token|secret|password|passwd|api[_-]?key|authorization|cookie|credential|private)/i.test(key)) {
+      return `${key}: [redacted]`;
+    }
     const value = args[key];
     if (value === null) return key;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -214,6 +293,146 @@ function formatToolArgs(args) {
     return key;
   });
   return ` (${parts.join(", ")})`;
+}
+
+function statusIsError(status) {
+  return /^(?:error|failed|failure)$/i.test(String(status || ""));
+}
+
+function slug(value, fallback) {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+  return cleaned || fallback;
+}
+
+function rememberActive(state, key, id) {
+  const list = state.activeByName.get(key) || [];
+  list.push(id);
+  state.activeByName.set(key, list);
+}
+
+function takeActive(state, key, fallbackId) {
+  const list = state.activeByName.get(key) || [];
+  const id = list.shift() || fallbackId;
+  if (list.length) state.activeByName.set(key, list);
+  else state.activeByName.delete(key);
+  return id;
+}
+
+export function createSlackProgressState() {
+  return {
+    activityStarted: false,
+    toolSeq: 0,
+    subagentSeq: 0,
+    activeByName: new Map()
+  };
+}
+
+export function observerProgressChunks(payload, state = createSlackProgressState()) {
+  if (!payload || typeof payload !== "object") return [];
+  const chunks = [];
+  const startActivity = () => {
+    if (state.activityStarted) return;
+    state.activityStarted = true;
+    chunks.push(slackTaskUpdate({
+      id: SLACK_PLAN_TASKS.activity,
+      title: "Executor activity",
+      status: "in_progress",
+      details: "Hermes executor is active"
+    }));
+  };
+  const duration = Number.isFinite(Number(payload.duration_ms))
+    ? `Completed in ${formatDurationMs(Number(payload.duration_ms))}`
+    : "";
+
+  switch (payload.kind) {
+    case "model_request_start":
+      chunks.push(slackTaskUpdate({
+        id: SLACK_PLAN_TASKS.model,
+        title: "Think with model",
+        status: "in_progress",
+        details: payload.model ? `Using ${payload.model}` : "Model request started"
+      }));
+      return chunks;
+    case "model_request_complete": {
+      const tools = Number(payload.assistant_tool_call_count || 0);
+      chunks.push(slackTaskUpdate({
+        id: SLACK_PLAN_TASKS.model,
+        title: "Think with model",
+        status: "complete",
+        details: tools
+          ? `Planned ${tools} tool call${tools === 1 ? "" : "s"}`
+          : duration || "Model response received"
+      }));
+      return chunks;
+    }
+    case "model_request_error":
+      chunks.push(slackTaskUpdate({
+        id: SLACK_PLAN_TASKS.model,
+        title: "Think with model",
+        status: "error",
+        details: payload.error_message || payload.reason || "Model request failed"
+      }));
+      return chunks;
+    case "tool_start": {
+      startActivity();
+      const name = payload.tool_name || "tool";
+      const id = `hermes_tool_${++state.toolSeq}_${slug(name, "tool")}`;
+      rememberActive(state, `tool:${name}`, id);
+      chunks.push(slackTaskUpdate({
+        id,
+        title: `Call ${name}`,
+        status: "in_progress",
+        details: formatToolArgs(payload.args).replace(/^\s*[()]+|\)+$/g, "") || "Tool call started"
+      }));
+      return chunks;
+    }
+    case "tool_complete": {
+      startActivity();
+      const name = payload.tool_name || "tool";
+      const fallbackId = `hermes_tool_${++state.toolSeq}_${slug(name, "tool")}`;
+      const id = takeActive(state, `tool:${name}`, fallbackId);
+      const error = payload.error_message ? `Failed: ${payload.error_message}` : "";
+      chunks.push(slackTaskUpdate({
+        id,
+        title: `Call ${name}`,
+        status: statusIsError(payload.status) || payload.error_message ? "error" : "complete",
+        details: error || duration || "Tool finished"
+      }));
+      return chunks;
+    }
+    case "subagent_start": {
+      startActivity();
+      const name = payload.child_role || "subagent";
+      const id = `hermes_subagent_${++state.subagentSeq}_${slug(name, "subagent")}`;
+      rememberActive(state, `subagent:${name}`, id);
+      chunks.push(slackTaskUpdate({
+        id,
+        title: `Run ${name}`,
+        status: "in_progress",
+        details: payload.child_goal || "Subagent started"
+      }));
+      return chunks;
+    }
+    case "subagent_stop": {
+      startActivity();
+      const name = payload.child_role || "subagent";
+      const fallbackId = `hermes_subagent_${++state.subagentSeq}_${slug(name, "subagent")}`;
+      const id = takeActive(state, `subagent:${name}`, fallbackId);
+      chunks.push(slackTaskUpdate({
+        id,
+        title: `Run ${name}`,
+        status: statusIsError(payload.status) ? "error" : "complete",
+        details: duration || payload.child_summary || "Subagent finished"
+      }));
+      return chunks;
+    }
+    default:
+      return chunks;
+  }
 }
 
 export function formatObserverProgress(payload) {
@@ -303,19 +522,14 @@ export function createSlackClient({ botToken, signingSecret, statusText, loading
     });
   }
 
-  function startStream({ channel, threadTs, teamId, userId, agent, fallbackHandle }) {
+  function startStream({ channel, threadTs, teamId, userId, agent, fallbackHandle, hasAttachments = false }) {
     return api("chat.startStream", {
       channel,
       thread_ts: threadTs,
       recipient_team_id: teamId,
       recipient_user_id: userId,
       task_display_mode: "plan",
-      chunks: [{
-        type: "task_update",
-        id: "hermes_turn",
-        title: `Run ${agentLabel(agent, fallbackHandle)}`,
-        status: "in_progress"
-      }]
+      chunks: slackInitialPlanChunks({ agent, fallbackHandle, hasAttachments })
     });
   }
 

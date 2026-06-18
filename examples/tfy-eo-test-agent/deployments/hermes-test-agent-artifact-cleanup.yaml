@@ -1,0 +1,34 @@
+name: hermes-test-agent-artifact-cleanup
+type: job
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+trigger:
+  type: cron
+  schedule: 0 2 * * 0
+concurrency_limit: 1
+retries: 1
+image:
+  type: build
+  build_source:
+    type: git
+    repo_url: https://github.com/truefoundry/tfy-hermes-agent
+    branch_name: 8f5cad3b39c027d22182a69398a85d89506fbc47
+    ref: 8f5cad3b39c027d22182a69398a85d89506fbc47
+  build_spec:
+    type: dockerfile
+    dockerfile_path: Dockerfile.controller
+    build_context_path: .
+    command: node controller/artifact-cleanup.mjs
+resources:
+  cpu_request: 0.1
+  cpu_limit: 0.5
+  memory_request: 256
+  memory_limit: 512
+  ephemeral_storage_request: 1000
+  ephemeral_storage_limit: 2000
+env:
+  TFY_HOST: https://tfy-eo.truefoundry.cloud
+  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_SLACK_INBOUND_ARTIFACT_REPO: hermes-inbound-artifacts-prod
+  HERMES_ARTIFACT_CLEANUP_RETENTION_DAYS: "7"
+  HERMES_ARTIFACT_CLEANUP_PREFIX: slack-run_
+  HERMES_ARTIFACT_CLEANUP_DRY_RUN: "false"
