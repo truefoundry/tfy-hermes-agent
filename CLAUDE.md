@@ -12,25 +12,17 @@ The product goal is to run Hermes Agent on TrueFoundry-controlled modules — co
 
 - `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run runtime callbacks. Owns control state on a controller PVC.
 - `runtime/server.mjs` — private stateful Hermes Runtime Service. Runs turns against persistent `/workspace/.hermes` state on a runtime PVC; concurrency defaults to 1 for SQLite safety.
-- `executor/executor.mjs` — worker/legacy turn runner for manual worker jobs and `truefoundry-job`. `executor/server.mjs` — legacy internal HTTP service for `truefoundry-service`. Legacy executor modes shuttle the session DB over HTTP.
+- `executor/executor.mjs` — disposable worker job entrypoint for async/maintenance execution surfaces. Normal user turns go through the private runtime service.
 - `bin/tfy-hermes-agent.mjs` — CLI. `init` writes a small agent manifest; `deploy` resolves operator defaults, auto-provisions SecretGroup secrets, validates, and applies manifests.
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
 
-**Executor modes** (agent yaml `executor`, default `hermes-runtime`):
-
-| Value | Turn runs in | Tool sandbox |
-|---|---|---|
-| `hermes-runtime` | Stateful private runtime Service | Runtime container |
-| `truefoundry-job` | Legacy disposable TF Job | Job container |
-| `truefoundry-service` | Legacy long-lived executor Service | Hermes `terminal.backend: daytona` (default) |
-
-Only `truefoundry-service` adds `DAYTONA-API-KEY` to the SecretGroup.
+The deployment topology is fixed: controller Service, private runtime Service, manual worker Job, controller PVC, runtime PVC, and optional artifact cleanup Job. Agent yaml must not contain `executor` or `terminal`; the compiler rejects both.
 
 ## Don't do these things
 
 - **Don't vendor Hermes source here.** Hermes is a pip dep (`hermes-agent[mcp]==0.16.0`) pulled into the executor image. Wrapping it is fine; modifying its internals is not.
-- **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. Base keys: `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. Add `DAYTONA-API-KEY` when `executor: truefoundry-service`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
-- **Don't write to the controller's volume from runtime/executor code.** The default runtime owns its own `/workspace/.hermes` PVC. Legacy executors use ephemeral FS and session DB HTTP shuttle.
+- **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. Base keys: `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
+- **Don't write to the controller's volume from runtime/worker code.** The runtime owns its own `/workspace/.hermes` PVC. Workers use ephemeral FS.
 - **Don't use the TrueFoundry Python SDK.** Use `tfy` CLI, the deploy skills, or raw REST endpoints (`/api/svc/v1/*`, `/api/ml/v1/*`). The SDK has Pydantic v1 issues on Python 3.13+.
 - **Don't add a new env knob for something `hermes.yaml` could express.** Prefer manifest fields.
 - **Don't try TrueFoundry's ingress-level `auth: { type: basic_auth }`** on the same port that serves Slack. Slack webhooks can't speak Basic. We tried; we reverted. See git log for `Wire ingress-level basic_auth` and its revert.
@@ -42,10 +34,10 @@ Three credentials, each scoped:
 | Surface | Credential | Where it lives |
 |---|---|---|
 | `/v1/*` inbound (clients) | `Authorization: Bearer <TFY_API_KEY>` | `TFY-API-KEY` in the agent's SecretGroup |
-| `/api/internal/*` (executor callbacks) | `Authorization: Bearer <per-run HMAC>` | Minted per turn from `HERMES-RUN-TOKEN-SECRET` |
+| `/api/internal/*` (runtime callbacks) | `Authorization: Bearer <per-run HMAC>` | Minted per turn from `HERMES-RUN-TOKEN-SECRET` |
 | `/slack/*` (Slack webhooks) | `X-Slack-Signature` HMAC of body | Verified with `SLACK-SIGNING-SECRET` |
 
-`TFY-API-KEY` is reused for three things — control-plane writes (job dispatch, skill fetch), the LLM gateway bearer, and inbound `/v1/*`. The token needs **read** permission on the workspace's apps too — a write-only Virtual Account PAT will silently fail at `triggerJob` because the controller can't look up the executor's deployment ID.
+`TFY-API-KEY` is reused for platform API calls such as artifact access, the LLM gateway bearer, and inbound `/v1/*`.
 
 CLI auth: `deploy` reads `~/.truefoundry/credentials.json` from `tfy login` (`host`, `access_token`). Env vars override. Production: `tfy login --host <url> --api-key <virtual-account-pat>`.
 
@@ -64,7 +56,6 @@ These all happened during the first manual rollout (Jun 14–15 2026). Search th
 2. **`workspace_fqn` query param is silently ignored** by `/api/svc/v1/apps`. Always use `workspaceFqn` (camelCase). Same applies to most filter params — they're camelCase server-side.
 3. **`tfy apply` only triggers a rebuild for `image.type: image`** (pre-built). For `image.type: build` (git source) you must use `tfy deploy --force`. `tfy apply` will accept the manifest and silently never build.
 4. **`deploy` auto-creates SecretGroups** via `/api/svc/v1/secret-groups` using the tenant's default secret-store `integrationId`. Fails if no integration is discoverable — then create manually in the UI.
-5. **`/v1/*` clients can't use a write-only PAT.** The controller calls `tfyGet('/api/svc/v1/apps?...')` to find the executor's deployment ID; this requires `read` on the workspace's apps. A Virtual Account scoped to `application:read` + `application:trigger` works.
 
 ## Branch / PR conventions
 

@@ -582,15 +582,6 @@ def register(ctx):
 `, { mode: 0o600 });
 }
 
-function terminalConfigLines(env) {
-  if (env.HERMES_TERMINAL_BACKEND !== "daytona") return [];
-  return [
-    "terminal:",
-    "  backend: daytona",
-    ""
-  ];
-}
-
 async function writeHermesConfig(env, model, work) {
   const home = env.HERMES_HOME || path.join(env.HOME || process.cwd(), ".hermes");
   await mkdir(home, { recursive: true });
@@ -611,7 +602,6 @@ async function writeHermesConfig(env, model, work) {
     "plugins:",
     "  enabled:",
     "    - tfy_slack_observer",
-    ...terminalConfigLines(env),
     ...mcpConfigLines(work.agent?.mcpServers),
     ""
   ].join("\n");

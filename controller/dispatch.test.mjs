@@ -3,9 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildWorkPayload,
   dispatchExecutorTurn,
-  triggerExecutorService,
-  triggerHermesRuntime,
-  triggerTruefoundryJob
+  triggerHermesRuntime
 } from "./dispatch.mjs";
 
 describe("buildWorkPayload", () => {
@@ -36,33 +34,6 @@ describe("buildWorkPayload", () => {
   });
 });
 
-describe("triggerExecutorService", () => {
-  it("posts work to the executor service dispatch endpoint", async () => {
-    const calls = [];
-    const fetchImpl = async (url, init) => {
-      calls.push({ url, init });
-      return {
-        ok: true,
-        status: 202,
-        text: async () => JSON.stringify({ accepted: true })
-      };
-    };
-    const work = { run_id: "run_xyz", hermes_session_id: "sess_2", content: "hi", callback_url: "https://c" };
-    const result = await triggerExecutorService({
-      executorUrl: "http://devrel-assistant-executor:8788",
-      run: { id: "run_xyz" },
-      work,
-      callbackToken: "token-123",
-      fetchImpl
-    });
-    assert.equal(result.accepted, true);
-    assert.equal(calls.length, 1);
-    assert.match(calls[0].url, /\/api\/internal\/runs\/run_xyz\/dispatch$/);
-    assert.equal(calls[0].init.headers.authorization, "Bearer token-123");
-    assert.deepEqual(JSON.parse(calls[0].init.body), { work });
-  });
-});
-
 describe("triggerHermesRuntime", () => {
   it("posts work to the runtime service dispatch endpoint", async () => {
     const calls = [];
@@ -90,54 +61,7 @@ describe("triggerHermesRuntime", () => {
   });
 });
 
-describe("triggerTruefoundryJob", () => {
-  it("triggers a TF job that fetches work from the controller", async () => {
-    const calls = [];
-    const fetchImpl = async (url, init) => {
-      calls.push({ url, init });
-      return { ok: true, status: 200, text: async () => "{}" };
-    };
-    const tfyGet = async () => ({ data: [{ deployment: { id: "dep_1" } }] });
-    await triggerTruefoundryJob({
-      tfyHost: "https://tfy.example",
-      tfyApiKey: "key",
-      tfyWorkspaceFqn: "ws",
-      executorName: "devrel-assistant-executor",
-      run: { id: "run_job" },
-      work: { run_id: "run_job", hermes_session_id: "sess", content: "x", callback_url: "https://c" },
-      callbackToken: "cb",
-      tfyGet,
-      fetchImpl
-    });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "https://tfy.example/api/svc/v1/jobs/trigger");
-    const body = JSON.parse(calls[0].init.body);
-    assert.equal(body.deploymentId, "dep_1");
-    assert.match(body.input.command, /HARNESS_CALLBACK_TOKEN=/);
-    assert.match(body.input.command, /https:\/\/c/);
-    assert.match(body.input.command, /run_job/);
-    assert.match(body.input.command, /node executor\/executor\.mjs/);
-  });
-});
-
 describe("dispatchExecutorTurn", () => {
-  it("routes to the service backend", async () => {
-    const fetchImpl = async () => ({
-      ok: true,
-      status: 202,
-      text: async () => JSON.stringify({ accepted: true, backend: "truefoundry-service" })
-    });
-    const result = await dispatchExecutorTurn({
-      backend: "truefoundry-service",
-      executorUrl: "http://executor:8788",
-      run: { id: "run_1" },
-      work: { run_id: "run_1", hermes_session_id: "s", content: "", callback_url: "https://c" },
-      callbackToken: "tok",
-      fetchImpl
-    });
-    assert.equal(result.accepted, true);
-  });
-
   it("routes to the runtime backend", async () => {
     const fetchImpl = async () => ({
       ok: true,
@@ -158,7 +82,18 @@ describe("dispatchExecutorTurn", () => {
   it("rejects unknown backends", async () => {
     await assert.rejects(
       () => dispatchExecutorTurn({ backend: "kubernetes" }),
-      /unsupported HERMES_EXECUTOR_BACKEND/
+      /unsupported dispatch backend/
+    );
+  });
+
+  it("rejects removed legacy backends", async () => {
+    await assert.rejects(
+      () => dispatchExecutorTurn({ backend: "truefoundry-job" }),
+      /unsupported dispatch backend/
+    );
+    await assert.rejects(
+      () => dispatchExecutorTurn({ backend: "truefoundry-service" }),
+      /unsupported dispatch backend/
     );
   });
 });

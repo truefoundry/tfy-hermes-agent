@@ -53,9 +53,8 @@ env:
   DISCORD_REQUIRE_MENTION: "true"
   DISCORD_FREE_RESPONSE_CHANNELS: ""
   HERMES_MODEL: openai-main/gpt-5.5
-  HERMES_EXECUTOR_BACKEND: hermes-runtime
-  HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
   HERMES_RUNTIME_URL: http://hermes-test-agent-runtime:8789
+  HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
   HERMES_SLACK_INBOUND_ARTIFACT_REPO: hermes-inbound-artifacts-prod
 ports:
   - port: 8787

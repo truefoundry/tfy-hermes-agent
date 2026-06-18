@@ -24,7 +24,7 @@ test("hermesHomeForTurn isolates runtime-owned state by Hermes session id", () =
   assert.equal(safeHermesSessionDirName("../bad/session"), ".._bad_session");
 });
 
-test("hermesHomeForTurn preserves legacy executor shared home", () => {
+test("hermesHomeForTurn preserves worker shared home", () => {
   assert.equal(
     hermesHomeForTurn({ HERMES_HOME: "/workspace/.hermes" }, "session-a"),
     "/workspace/.hermes"

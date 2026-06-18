@@ -1,17 +1,16 @@
 // Periodic reconciler for stuck runs and Slack dedup TTL cleanup.
 //
 // Responsibilities:
-//   - Flip 'queued' runs to 'dispatched' (or re-trigger idempotently) when
-//     they have aged past dispatchTtlMs without an executor heartbeat.
+//   - Mark 'queued' runs failed when they have aged past dispatchTtlMs without
+//     being handed to the runtime.
 //   - Mark 'dispatched'/'running' runs 'failed' if they exceed runTtlMs
-//     without a /complete callback and the platform reports the job
-//     terminal.
+//     without a /complete callback or progress event.
 //   - Sweep dedup tables (slack_seen_events, slack_seen_messages) older
 //     than 24h.
 //
 // The reconciler does not assume Slack/TrueFoundry calls are available.
-// Platform probes go through the injected probeRunOnPlatform / tfyGet
-// functions so the loop is unit-testable and can run no-op when unconfigured.
+// Runtime probes go through the injected probeRunOnPlatform function so the
+// loop is unit-testable and can run no-op when unconfigured.
 //
 // Returns a `stop()` function that clears the interval.
 
@@ -20,61 +19,18 @@ const DEFAULT_DISPATCH_TTL_MS = 30_000;
 const DEFAULT_RUN_TTL_MS = 30 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-async function probeJobForRun({ tfyGet, runId }) {
-  if (typeof tfyGet !== "function") return { found: false, state: null };
-  try {
-    const body = await tfyGet(`/api/svc/v1/jobs/runs?job_run_name_alias=${encodeURIComponent(runId)}&limit=1`);
-    const data = Array.isArray(body?.data) ? body.data : [];
-    if (!data.length) return { found: false, state: null };
-    return { found: true, state: pickJobAlias({ data }) };
-  } catch (error) {
-    return { found: false, state: null, error };
-  }
-}
-
-function isTerminalJobState(state) {
-  const text = String(state || "").toLowerCase();
-  return [
-    "succeeded",
-    "success",
-    "completed",
-    "failed",
-    "failure",
-    "error",
-    "cancelled",
-    "canceled",
-    "killed",
-    "terminated"
-  ].includes(text);
-}
-
-function isTerminalPlatformState(state, backend) {
-  const text = String(state || "").toLowerCase();
-  if (backend === "truefoundry-service") return false;
-  return isTerminalJobState(text);
-}
-
-function pickJobAlias(payload) {
-  if (!payload || typeof payload !== "object") return null;
-  const data = Array.isArray(payload.data) ? payload.data[0] : payload.data || payload;
-  if (!data || typeof data !== "object") return null;
-  return data.status || data.state || data.phase || null;
-}
-
-async function probeRun({ tfyGet, probeRunOnPlatform, runId }) {
+async function probeRuntime({ probeRunOnPlatform, runId }) {
   if (typeof probeRunOnPlatform === "function") {
     return probeRunOnPlatform(runId);
   }
-  return probeJobForRun({ tfyGet, runId });
+  return { found: false, state: null };
 }
 
 export function startReconciler(db, {
   intervalMs = DEFAULT_INTERVAL_MS,
   dispatchTtlMs = DEFAULT_DISPATCH_TTL_MS,
   runTtlMs = DEFAULT_RUN_TTL_MS,
-  tfyGet = null,
   probeRunOnPlatform = null,
-  executorBackend = "truefoundry-job",
   logger = console
 } = {}) {
   if (!db) throw new Error("startReconciler: db is required");
@@ -98,26 +54,12 @@ export function startReconciler(db, {
     const cutoff = nowMs - dispatchTtlMs;
     const rows = selectQueuedStale.all(cutoff);
     for (const row of rows) {
-      const probe = executorBackend === "truefoundry-service"
-        ? { found: false, state: null }
-        : await probeRun({ tfyGet, probeRunOnPlatform, runId: row.id });
-      if (probe.found) {
-        markDispatched.run(JSON.stringify({ recovered_by: "reconciler", state: probe.state }), nowMs, row.id);
-        logger?.log?.(`[reconciler] queued run ${row.id} found on platform (state=${probe.state ?? "unknown"}); marked dispatched`);
-        continue;
-      }
-      // The run's prompt is not persisted in the runs table — it only lives
-      // in the signed work payload that was passed to the original Trigger
-      // Job call. If no platform job exists for this run AND the dispatch
-      // window has elapsed, the most honest thing to do is mark it failed
-      // and let the user resend. Re-triggering with an empty prompt would
-      // produce a meaningless run.
       markFailed.run(
-        "reconciler: queued past dispatch TTL with no platform job found; resend the message",
+        "reconciler: queued past dispatch TTL without runtime dispatch; resend the message",
         nowMs,
         row.id
       );
-      logger?.warn?.(`[reconciler] queued run ${row.id} stale and not on platform; marked failed`);
+      logger?.warn?.(`[reconciler] queued run ${row.id} stale before runtime dispatch; marked failed`);
     }
   }
 
@@ -125,24 +67,16 @@ export function startReconciler(db, {
     const cutoff = nowMs - runTtlMs;
     const rows = selectInflightStale.all(cutoff);
     for (const row of rows) {
-      const probe = await probeRun({ tfyGet, probeRunOnPlatform, runId: row.id });
-      if (probe.found && isTerminalPlatformState(probe.state, executorBackend)) {
-        markFailed.run(
-          `reconciler: executor terminal without /complete (state=${probe.state ?? "unknown"})`,
-          nowMs,
-          row.id
-        );
-        logger?.warn?.(`[reconciler] inflight run ${row.id} terminal on platform (state=${probe.state}); marked failed`);
-        continue;
-      }
-      if (!probe.found && !probe.error && executorBackend !== "truefoundry-service") {
-        markFailed.run(
-          "reconciler: executor not found on platform after run TTL",
-          nowMs,
-          row.id
-        );
-        logger?.warn?.(`[reconciler] inflight run ${row.id} missing on platform; marked failed`);
-      }
+      const probe = await probeRuntime({ probeRunOnPlatform, runId: row.id });
+      const stateText = probe.error
+        ? `runtime probe error: ${probe.error instanceof Error ? probe.error.message : String(probe.error)}`
+        : `runtime state=${probe.found ? probe.state ?? "unknown" : "unavailable"}`;
+      markFailed.run(
+        `reconciler: run exceeded TTL without /complete or progress event (${stateText})`,
+        nowMs,
+        row.id
+      );
+      logger?.warn?.(`[reconciler] inflight run ${row.id} stale (${stateText}); marked failed`);
     }
   }
 

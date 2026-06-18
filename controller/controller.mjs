@@ -1,9 +1,8 @@
 // Hermes wrapper controller.
 //
 // HTTP service in front of a single Hermes agent. Speaks Slack and the
-// OpenAI-compatible APIs to clients; dispatches turns to the executor
-// (truefoundry-job or truefoundry-service) and shuttles the per-thread
-// session DB between this pod's RWO PVC and the executor.
+// OpenAI-compatible APIs to clients; dispatches turns to the private Hermes
+// Runtime Service and streams run events back to API/Slack callers.
 
 import { createServer } from "node:http";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -79,9 +78,6 @@ const TFY_HOST = (process.env.TFY_HOST || "").replace(/\/+$/, "");
 const TFY_API_KEY = process.env.TFY_API_KEY || "";
 const TFY_WORKSPACE_FQN = process.env.TFY_WORKSPACE_FQN || "";
 const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
-const HERMES_EXECUTOR_BACKEND = process.env.HERMES_EXECUTOR_BACKEND || "truefoundry-job";
-const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
-const HERMES_EXECUTOR_URL = (process.env.HERMES_EXECUTOR_URL || "").replace(/\/+$/, "");
 const HERMES_RUNTIME_URL = (process.env.HERMES_RUNTIME_URL || "").replace(/\/+$/, "");
 // Inbound /v1/* bearer is the TFY API key. We don't mint a separate
 // HERMES_OPENAI_API_KEY: clients hitting this controller already need a TFY
@@ -421,47 +417,12 @@ function getRunOrThrow(runId) {
   return run;
 }
 
-async function tfyGet(apiPath) {
-  if (!TFY_HOST || !TFY_API_KEY) {
-    throw new Error("TFY_HOST and TFY_API_KEY are required for TrueFoundry control-plane calls");
-  }
-  const res = await fetch(`${TFY_HOST}${apiPath}`, {
-    headers: { authorization: `Bearer ${TFY_API_KEY}` }
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`TrueFoundry ${apiPath} failed ${res.status}: ${text.slice(0, 500)}`);
-  return text ? JSON.parse(text) : {};
-}
-
-async function probeRunOnPlatform(runId) {
-  if (HERMES_EXECUTOR_BACKEND === "hermes-runtime") {
-    if (!HERMES_RUNTIME_URL) return { found: false, state: null };
-    try {
-      const res = await fetch(`${HERMES_RUNTIME_URL}/api/health`);
-      if (res.ok) return { found: true, state: "running" };
-      return { found: false, state: null };
-    } catch (error) {
-      return { found: false, state: null, error };
-    }
-  }
-  if (HERMES_EXECUTOR_BACKEND === "truefoundry-service") {
-    if (!HERMES_EXECUTOR_URL) return { found: false, state: null };
-    try {
-      const res = await fetch(`${HERMES_EXECUTOR_URL}/api/health`);
-      if (res.ok) return { found: true, state: "running" };
-      return { found: false, state: null };
-    } catch (error) {
-      return { found: false, state: null, error };
-    }
-  }
-  if (!TFY_HOST || !TFY_API_KEY) return { found: false, state: null };
+async function probeRunOnPlatform() {
+  if (!HERMES_RUNTIME_URL) return { found: false, state: null };
   try {
-    const body = await tfyGet(`/api/svc/v1/jobs/runs?job_run_name_alias=${encodeURIComponent(runId)}&limit=1`);
-    const data = Array.isArray(body?.data) ? body.data : [];
-    if (!data.length) return { found: false, state: null };
-    const row = data[0];
-    const state = row.status || row.state || row.phase || null;
-    return { found: true, state };
+    const res = await fetch(`${HERMES_RUNTIME_URL}/api/health`);
+    if (res.ok) return { found: true, state: "running" };
+    return { found: false, state: null };
   } catch (error) {
     return { found: false, state: null, error };
   }
@@ -469,7 +430,7 @@ async function probeRunOnPlatform(runId) {
 
 async function triggerExecutor({ run, agent, content, callbackToken, slack = null, attachments = [] }) {
   if (process.env.HERMES_SKIP_EXECUTOR_DISPATCH === "1") {
-    return { skipped: true, backend: HERMES_EXECUTOR_BACKEND };
+    return { skipped: true, backend: "hermes-runtime" };
   }
   if (!PUBLIC_BASE_URL) {
     throw new Error("PUBLIC_BASE_URL must be set so the executor can call back");
@@ -485,17 +446,10 @@ async function triggerExecutor({ run, agent, content, callbackToken, slack = nul
   });
   stmts.setRunWorkPayload.run(JSON.stringify(work), now(), run.id);
   return dispatchExecutorTurn({
-    backend: HERMES_EXECUTOR_BACKEND,
-    tfyHost: TFY_HOST,
-    tfyApiKey: TFY_API_KEY,
-    tfyWorkspaceFqn: TFY_WORKSPACE_FQN,
-    executorName: HERMES_EXECUTOR_NAME,
-    executorUrl: HERMES_EXECUTOR_URL,
     runtimeUrl: HERMES_RUNTIME_URL,
     run,
     work,
-    callbackToken,
-    tfyGet
+    callbackToken
   });
 }
 
@@ -1641,8 +1595,11 @@ async function handle(req, res) {
       const body = await json(req);
       const payload = JSON.stringify(body || {});
       const insert = stmts.insertRunEvent.run(runId, body?.type || "event", payload, now());
-      // Bump run status to 'running' on first event arrival if still dispatched.
-      if (run.status === "dispatched") stmts.setRunStatus.run("running", now(), runId);
+      // Any runtime event is progress; refresh updated_at so long-running
+      // active tasks are not mistaken for stale runs.
+      if (run.status === "dispatched" || run.status === "running") {
+        stmts.setRunStatus.run("running", now(), runId);
+      }
       publish(runId, { type: "event", id: insert.lastInsertRowid });
       return send(res, 200, { ok: true });
     }
@@ -1723,12 +1680,13 @@ function assertStartupConfig() {
   const missing = [];
   if (!TFY_API_KEY) missing.push("TFY_API_KEY");
   if (!RUN_TOKEN_SECRET) missing.push("HERMES_RUN_TOKEN_SECRET");
+  if (!HERMES_RUNTIME_URL) missing.push("HERMES_RUNTIME_URL");
   if (missing.length) {
     console.error(`[hermes] startup failure: missing required env (${missing.join(", ")})`);
     throw new Error(`missing required env: ${missing.join(", ")}`);
   }
   if (!PUBLIC_BASE_URL) {
-    console.warn("[hermes] PUBLIC_BASE_URL is not set; executor cannot reach this controller");
+    console.warn("[hermes] PUBLIC_BASE_URL is not set; runtime cannot reach this controller");
   }
   if (SLACK_BOT_TOKEN && !SLACK_SIGNING_SECRET) {
     console.warn("[hermes] SLACK_BOT_TOKEN is set but SLACK_SIGNING_SECRET is missing; Slack requests will be rejected");
@@ -1739,9 +1697,7 @@ assertStartupConfig();
 ensureDefaultAgent();
 
 const stopReconciler = startReconciler(db, {
-  tfyGet: TFY_HOST && TFY_API_KEY ? tfyGet : null,
-  probeRunOnPlatform,
-  executorBackend: HERMES_EXECUTOR_BACKEND
+  probeRunOnPlatform
 });
 
 const httpServer = createServer((req, res) => {

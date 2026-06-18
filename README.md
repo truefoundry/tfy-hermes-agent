@@ -110,7 +110,7 @@ agents/<name>/
 └── deployments/                # compiled TF manifests (written by deploy)
 ```
 
-The wizard keeps the agent yaml small: `name`, `description`, `instructions`, `model`, `skills`, and `mcp_servers` describe the agent. Deployment fields such as `workspace_fqn`, `gateway_url`, `host`, and `secrets` can still be set in yaml, but `deploy` can also fill them from `TFY_WORKSPACE_FQN`, `OPENAI_BASE_URL` / the default TrueFoundry gateway, `TFY_HOST`, and the default `<name>-hermes-secrets` SecretGroup name. The default executor is `hermes-runtime`; legacy `truefoundry-job` and `truefoundry-service` modes remain available.
+The wizard keeps the agent yaml small: `name`, `description`, `instructions`, `model`, `skills`, and `mcp_servers` describe the agent. Deployment fields such as `workspace_fqn`, `gateway_url`, `host`, and `secrets` can still be set in yaml, but `deploy` can also fill them from `TFY_WORKSPACE_FQN`, `OPENAI_BASE_URL` / the default TrueFoundry gateway, `TFY_HOST`, and the default `<name>-hermes-secrets` SecretGroup name. The deployment topology is always controller + runtime + worker.
 
 Or write the yaml by hand using the [agent config fields](#agent-config-fields) below.
 
@@ -135,8 +135,6 @@ Only needed if you want Slack. Socket Mode is not supported.
 
 For Slack, paste `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
 
-For `executor: truefoundry-service`, also set `DAYTONA-API-KEY` in the SecretGroup before tool-using turns. The default `hermes-runtime` path does not require Daytona.
-
 Manual SecretGroup creation is only needed if `deploy` cannot discover a secret-store integration in your tenant.
 
 Preview manifests without applying:
@@ -154,7 +152,6 @@ This compiles into `agents/<name>/deployments/`:
 | `<name>-runtime.yaml` | Service | Private stateful Hermes runtime; single active turn by default |
 | `<name>-worker.yaml` | Job | Manual worker image for async/maintenance execution surfaces |
 | `<name>-controller.yaml` | Service | Long-running HTTP service (Slack + `/v1/*`) |
-| `<name>-executor.yaml` | Job or Service | Only for legacy `truefoundry-job` / `truefoundry-service` backends |
 
 SecretGroup is **not** a deployments file — `deploy` provisions it via API before apply.
 
@@ -165,7 +162,7 @@ tfy-hermes-agent deploy <name>
 # or: tfy-hermes-agent deploy agents/<name>/<name>.yaml
 ```
 
-`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order. The default order is controller volume → runtime volume → runtime → worker → controller, plus artifact cleanup when Slack artifact storage is enabled. Legacy executor backends keep the old volume → controller → executor order.
+`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order. The order is controller volume → runtime volume → runtime → worker → controller, plus artifact cleanup when Slack artifact storage is enabled.
 
 Flags:
 
@@ -286,8 +283,8 @@ discord:
 | `discord` | no | Discord interaction bridge config. `enabled: true` exposes `/discord/interactions`; allowlists use Discord numeric IDs. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
-| `executor` | no | `hermes-runtime` (default), `truefoundry-job`, or `truefoundry-service`. Default omitted from yaml. |
-| `terminal` | no | Only for `truefoundry-service`. Defaults to `daytona`. `init` writes when service is chosen. |
+| `executor` | no | Unsupported. Do not set; deployments always use controller + runtime + worker. |
+| `terminal` | no | Unsupported. Do not set; sandbox/runtime behavior is managed by the runtime image. |
 
 ---
 
@@ -306,14 +303,13 @@ Then say **"create a Hermes Slack agent"**.
 | Surface | Credential | Source |
 |---|---|---|
 | `/v1/*` (API clients) | `Authorization: Bearer <TFY-API-KEY>` | SecretGroup `TFY-API-KEY` |
-| `/api/internal/*` (executor callbacks) | Per-run HMAC bearer | Minted from SecretGroup `HERMES-RUN-TOKEN-SECRET` |
+| `/api/internal/*` (runtime callbacks) | Per-run HMAC bearer | Minted from SecretGroup `HERMES-RUN-TOKEN-SECRET` |
 | `/slack/*` (webhooks) | `X-Slack-Signature` HMAC | Verified with SecretGroup `SLACK-SIGNING-SECRET` |
 | Slack outbound messages | Bot token | SecretGroup `SLACK-BOT-TOKEN` |
 | AgentMail webhooks | Svix signature | SecretGroup `AGENTMAIL-WEBHOOK-SECRET` |
 | AgentMail API replies | API key | SecretGroup `AGENTMAIL-API-KEY` |
 | Discord interactions | Ed25519 public key | SecretGroup `DISCORD-PUBLIC-KEY` |
 | Discord bot operations | Bot token | SecretGroup `DISCORD-BOT-TOKEN` |
-| LLM calls (executor) | Gateway bearer | SecretGroup `TFY-API-KEY` via `OPENAI_API_KEY` |
-| STT/TTS calls (executor) | Gateway bearer | SecretGroup `HERMES-STT-API-KEY` / `HERMES-TTS-API-KEY`, falling back to `TFY-API-KEY` when unset |
+| LLM calls (runtime/worker) | Gateway bearer | SecretGroup `TFY-API-KEY` via `OPENAI_API_KEY` |
+| STT/TTS calls (runtime/worker) | Gateway bearer | SecretGroup `HERMES-STT-API-KEY` / `HERMES-TTS-API-KEY`, falling back to `TFY-API-KEY` when unset |
 | Slack artifact cleanup job | Scoped TrueFoundry virtual-account token | SecretGroup `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` |
-| Daytona tool sandbox | API key | SecretGroup `DAYTONA-API-KEY` (only when `executor: truefoundry-service`) |
