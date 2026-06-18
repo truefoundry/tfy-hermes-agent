@@ -224,6 +224,7 @@ slack_inbound_artifact_cleanup:
   enabled: true
   retention_days: 7
   schedule: "0 2 * * 0"
+  timezone: UTC
 skills:
   - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
 mcp_servers:
@@ -245,7 +246,7 @@ mcp_servers:
 | `slack.allowed_users` | no | Slack user IDs. Empty or omitted = all users. `init` prompts. |
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
 | `slack_inbound_artifact_repo` | no | ML repo name or `tfy-mlrepo://` FQN for Slack file uploads. Required if users will send Slack attachments. |
-| `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention and weekly cron `0 2 * * 0`. |
+| `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention, weekly cron `0 2 * * 0`, and UTC timezone. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
 | `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. `init` prompts; job default omitted from yaml. |

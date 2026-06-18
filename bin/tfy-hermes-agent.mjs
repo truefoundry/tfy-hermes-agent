@@ -17,6 +17,7 @@ const DEFAULT_VOLUME_SIZE_GI = 10;
 const DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS = 7;
 const DEFAULT_ARTIFACT_CLEANUP_SCHEDULE = "0 2 * * 0";
 const DEFAULT_ARTIFACT_CLEANUP_PREFIX = "slack-run_";
+const DEFAULT_ARTIFACT_CLEANUP_TIMEZONE = "UTC";
 // TrueFoundry SecretGroup key names must be alphanumeric, dots, or hyphens —
 // underscores are rejected by the platform. Env-var names with underscores are
 // fine; the controller/executor manifests do the mapping from hyphenated
@@ -351,12 +352,13 @@ export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }
     enabled: Boolean(enabledByDefault),
     retentionDays: DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS,
     schedule: DEFAULT_ARTIFACT_CLEANUP_SCHEDULE,
-    prefix: DEFAULT_ARTIFACT_CLEANUP_PREFIX
+    prefix: DEFAULT_ARTIFACT_CLEANUP_PREFIX,
+    timezone: DEFAULT_ARTIFACT_CLEANUP_TIMEZONE
   };
   if (value == null) return defaults;
   if (typeof value === "boolean") return { ...defaults, enabled: value };
   assertObject(value, "slack_inbound_artifact_cleanup");
-  const allowed = new Set(["enabled", "retention_days", "schedule", "prefix"]);
+  const allowed = new Set(["enabled", "retention_days", "schedule", "prefix", "timezone"]);
   const extra = Object.keys(value).filter((key) => !allowed.has(key));
   if (extra.length) throw new Error(`slack_inbound_artifact_cleanup has unsupported keys: ${extra.join(", ")}`);
 
@@ -376,12 +378,15 @@ export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(prefix)) {
     throw new Error("slack_inbound_artifact_cleanup.prefix must use only letters, numbers, underscores, and hyphens");
   }
+  const timezone = String(value.timezone || defaults.timezone).trim();
+  if (!timezone) throw new Error("slack_inbound_artifact_cleanup.timezone must not be empty");
 
   return {
     enabled: value.enabled == null ? defaults.enabled : Boolean(value.enabled),
     retentionDays,
     schedule,
-    prefix
+    prefix,
+    timezone
   };
 }
 
@@ -614,7 +619,12 @@ export function artifactCleanupManifest(config) {
     name: resourceNames(config).artifactCleanup,
     type: "job",
     workspace_fqn: config.workspaceFqn,
-    trigger: { type: "cron", schedule: cleanup.schedule },
+    trigger: {
+      type: "scheduled",
+      schedule: cleanup.schedule,
+      concurrency_policy: "Forbid",
+      timezone: cleanup.timezone
+    },
     concurrency_limit: 1,
     retries: 1,
     image: buildImage(config, "Dockerfile.controller", "node controller/artifact-cleanup.mjs"),

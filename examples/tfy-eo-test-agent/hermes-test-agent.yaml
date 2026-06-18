@@ -15,3 +15,4 @@ slack_inbound_artifact_cleanup:
   enabled: true
   retention_days: 7
   schedule: "0 2 * * 0"
+  timezone: UTC

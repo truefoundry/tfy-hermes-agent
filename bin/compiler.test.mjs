@@ -277,7 +277,8 @@ test("normalizeSlackInboundArtifactCleanup defaults to weekly cleanup when artif
     enabled: true,
     retentionDays: 7,
     schedule: "0 2 * * 0",
-    prefix: "slack-run_"
+    prefix: "slack-run_",
+    timezone: "UTC"
   });
   assert.equal(normalizeSlackInboundArtifactCleanup(false, { enabledByDefault: true }).enabled, false);
   assert.throws(
@@ -293,12 +294,18 @@ test("artifactCleanupManifest builds a weekly cleanup job for Slack inbound arti
       enabled: true,
       retentionDays: 7,
       schedule: "0 2 * * 0",
-      prefix: "slack-run_"
+      prefix: "slack-run_",
+      timezone: "UTC"
     }
   }));
   assert.equal(manifest.type, "job");
   assert.equal(manifest.name, "devrel-assistant-cleanup");
-  assert.deepEqual(manifest.trigger, { type: "cron", schedule: "0 2 * * 0" });
+  assert.deepEqual(manifest.trigger, {
+    type: "scheduled",
+    schedule: "0 2 * * 0",
+    concurrency_policy: "Forbid",
+    timezone: "UTC"
+  });
   assert.equal(manifest.concurrency_limit, 1);
   assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.controller");
   assert.equal(manifest.image.build_spec.command, "node controller/artifact-cleanup.mjs");
@@ -329,7 +336,7 @@ test("planManifests adds artifact cleanup only when Slack artifact cleanup is en
   }), { includeSecrets: false }).some((item) => item.filename.endsWith("-artifact-cleanup.yaml")));
   assert.ok(planManifests(fakeConfig({
     slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
-    slackInboundArtifactCleanup: { enabled: true, retentionDays: 7, schedule: "0 2 * * 0", prefix: "slack-run_" }
+    slackInboundArtifactCleanup: { enabled: true, retentionDays: 7, schedule: "0 2 * * 0", prefix: "slack-run_", timezone: "UTC" }
   }), { includeSecrets: false }).some((item) => item.filename.endsWith("-artifact-cleanup.yaml")));
 });
 
@@ -435,7 +442,8 @@ test("checked-in tfy-eo test agent example stays deployable", async () => {
     enabled: true,
     retentionDays: 7,
     schedule: "0 2 * * 0",
-    prefix: "slack-run_"
+    prefix: "slack-run_",
+    timezone: "UTC"
   });
 
   const planned = planManifests(parsed, { includeSecrets: false });

@@ -2,8 +2,10 @@ name: hermes-test-agent-cleanup
 type: job
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 trigger:
-  type: cron
+  type: scheduled
   schedule: 0 2 * * 0
+  concurrency_policy: Forbid
+  timezone: UTC
 concurrency_limit: 1
 retries: 1
 image:
