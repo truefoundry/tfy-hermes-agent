@@ -13,6 +13,7 @@ import YAML from "yaml";
 const DEFAULT_REPO_URL = "https://github.com/truefoundry/tfy-hermes-agent";
 const DEFAULT_SOURCE_REF = "main";
 const DEFAULT_MODEL = "openai-main/gpt-5.5";
+const DEFAULT_GATEWAY_URL = "https://gateway.truefoundry.ai";
 const DEFAULT_VOLUME_SIZE_GI = 10;
 const DEFAULT_ARTIFACT_CLEANUP_RETENTION_DAYS = 7;
 const DEFAULT_ARTIFACT_CLEANUP_SCHEDULE = "0 2 * * 0";
@@ -29,10 +30,16 @@ const BASE_SECRET_KEYS = [
   "TFY-API-KEY",
   "HERMES-RUN-TOKEN-SECRET",
   "SLACK-BOT-TOKEN",
-  "SLACK-SIGNING-SECRET"
+  "SLACK-SIGNING-SECRET",
+  "HERMES-STT-API-KEY",
+  "HERMES-TTS-API-KEY"
 ];
 const DAYTONA_SECRET_KEY = "DAYTONA-API-KEY";
 const ARTIFACT_CLEANUP_TFY_SECRET_KEY = "HERMES-ARTIFACT-CLEANUP-TFY-API-KEY";
+const AGENTMAIL_API_SECRET_KEY = "AGENTMAIL-API-KEY";
+const AGENTMAIL_WEBHOOK_SECRET_KEY = "AGENTMAIL-WEBHOOK-SECRET";
+const DISCORD_BOT_TOKEN_SECRET_KEY = "DISCORD-BOT-TOKEN";
+const DISCORD_PUBLIC_KEY_SECRET_KEY = "DISCORD-PUBLIC-KEY";
 const DEFAULT_DAYTONA_API_URL = "https://app.daytona.io";
 // Platform-owned Daytona settings (not agent yaml).
 export const DEFAULT_HERMES_DAYTONA_SNAPSHOT = "hermes-executor";
@@ -40,6 +47,8 @@ export const DEFAULT_DAYTONA_AUTO_STOP_MINUTES = 5;
 export const DEFAULT_DAYTONA_AUTO_DELETE_INTERVAL = -1;
 
 const EXECUTOR_BACKEND_ALIASES = {
+  "hermes-runtime": "hermes-runtime",
+  runtime: "hermes-runtime",
   "truefoundry-job": "truefoundry-job",
   "tfy-job": "truefoundry-job",
   truefoundry: "truefoundry-job",
@@ -54,7 +63,7 @@ export function normalizeExecutorBackend(raw) {
   }
   const backend = EXECUTOR_BACKEND_ALIASES[text];
   if (!backend) {
-    throw new Error(`executor must be truefoundry-job or truefoundry-service (aliases: tfy-job); got ${JSON.stringify(raw)}`);
+    throw new Error(`executor must be hermes-runtime, truefoundry-job, or truefoundry-service (aliases: runtime, tfy-job); got ${JSON.stringify(raw)}`);
   }
   return backend;
 }
@@ -66,7 +75,7 @@ export function normalizeExecutorConfig(value) {
     }
   }
   const raw = value === undefined || value === null
-    ? "truefoundry-job"
+    ? "hermes-runtime"
     : typeof value === "string"
       ? value
       : value.backend;
@@ -74,12 +83,14 @@ export function normalizeExecutorConfig(value) {
 }
 
 export const INIT_EXECUTOR_CHOICES = [
-  { key: "1", value: "truefoundry-job", label: "truefoundry-job — per-turn TF Job (default)" },
-  { key: "2", value: "truefoundry-service", label: "truefoundry-service — long-lived Service + Daytona tool sandbox" }
+  { key: "1", value: "hermes-runtime", label: "hermes-runtime — stateful Hermes Runtime Service (default)" },
+  { key: "2", value: "truefoundry-job", label: "truefoundry-job — legacy per-turn TF Job" },
+  { key: "3", value: "truefoundry-service", label: "truefoundry-service — legacy executor Service + Daytona tool sandbox" }
 ];
 
 export function initExecutorYamlFields(executorInput) {
   const { backend } = normalizeExecutorConfig(executorInput);
+  if (backend === "hermes-runtime") return {};
   if (backend === "truefoundry-job") return {};
   const terminal = normalizeTerminalConfig(backend, undefined);
   return {
@@ -89,6 +100,12 @@ export function initExecutorYamlFields(executorInput) {
 }
 
 export function normalizeTerminalConfig(executorBackend, value) {
+  if (executorBackend === "hermes-runtime") {
+    if (value != null) {
+      throw new Error("terminal is not supported in hermes-runtime config; sandbox routing is runtime-managed");
+    }
+    return null;
+  }
   if (executorBackend === "truefoundry-job") {
     if (value != null) {
       throw new Error("terminal is not supported when executor is truefoundry-job");
@@ -128,6 +145,12 @@ export function requiredSecretKeys(config) {
   if (config?.slackInboundArtifactRepo && config?.slackInboundArtifactCleanup?.enabled) {
     keys.push(ARTIFACT_CLEANUP_TFY_SECRET_KEY);
   }
+  if (config?.agentEmail) {
+    keys.push(AGENTMAIL_API_SECRET_KEY, AGENTMAIL_WEBHOOK_SECRET_KEY);
+  }
+  if (config?.discord?.enabled) {
+    keys.push(DISCORD_BOT_TOKEN_SECRET_KEY, DISCORD_PUBLIC_KEY_SECRET_KEY);
+  }
   return keys;
 }
 const SECRET_PLACEHOLDER_SLACK = "pending-slack-setup";
@@ -148,7 +171,7 @@ const USAGE = [
   "  tfy-hermes-agent deploy <name> | agents/<name>/<name>.yaml [--update] [--emit-manifests <dir>] [--skip-live-checks]",
   "",
   "init creates agents/<name>/ with <name>.yaml, .hermes-secrets.local, and slack-app-manifest.json (unless --api-only).",
-  "init prompts for executor backend (truefoundry-job default or truefoundry-service + Daytona) after required fields.",
+  "init keeps the agent yaml small; deploy fills workspace/secrets/gateway from env or defaults.",
   "init --api-only skips Slack file output and Slack optional prompts.",
   "deploy auto-creates the SecretGroup via API, compiles manifests to agents/<name>/deployments/, then tfy apply -f each file.",
   "deploy validates the config unless --skip-live-checks (compile-only preview).",
@@ -351,6 +374,60 @@ function normalizeSlackAccess(value) {
   return { allowedChannels, allowedUsers };
 }
 
+function normalizeOptionalEmail(value, label) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email) return "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    throw new Error(`${label} must be a valid email address`);
+  }
+  return email;
+}
+
+function normalizeDiscordConfig(value) {
+  if (value == null || value === false) {
+    return {
+      enabled: false,
+      allowedUsers: [],
+      allowedRoles: [],
+      homeChannel: "",
+      requireMention: true,
+      freeResponseChannels: []
+    };
+  }
+  if (value === true) value = { enabled: true };
+  assertObject(value, "discord");
+  const allowed = new Set([
+    "enabled",
+    "allowed_users",
+    "allowed_roles",
+    "home_channel",
+    "require_mention",
+    "free_response_channels"
+  ]);
+  const extra = Object.keys(value).filter((key) => !allowed.has(key));
+  if (extra.length) throw new Error(`discord has unsupported keys: ${extra.join(", ")}`);
+  const snowflakes = (list, label) => Array.from(new Set(stringList(list, label)));
+  const allowedUsers = snowflakes(value.allowed_users, "discord.allowed_users");
+  const allowedRoles = snowflakes(value.allowed_roles, "discord.allowed_roles");
+  const freeResponseChannels = snowflakes(value.free_response_channels, "discord.free_response_channels");
+  const homeChannel = String(value.home_channel || "").trim();
+  const bad = [
+    ...allowedUsers,
+    ...allowedRoles,
+    ...freeResponseChannels,
+    homeChannel
+  ].filter(Boolean).filter((item) => !/^\d{5,32}$/.test(item));
+  if (bad.length) throw new Error(`discord IDs must be numeric Discord snowflakes: ${bad.join(", ")}`);
+  return {
+    enabled: value.enabled == null ? true : Boolean(value.enabled),
+    allowedUsers,
+    allowedRoles,
+    homeChannel,
+    requireMention: value.require_mention == null ? true : Boolean(value.require_mention),
+    freeResponseChannels
+  };
+}
+
 export function normalizeSlackInboundArtifactCleanup(value, { enabledByDefault }) {
   const defaults = {
     enabled: Boolean(enabledByDefault),
@@ -441,11 +518,11 @@ export async function readHermesConfig(file) {
   assertObject(config, "hermes.yaml");
 
   const name = slugifyName(config.name);
-  const workspaceFqn = String(config.workspace_fqn || "").trim();
+  const workspaceFqn = String(config.workspace_fqn || process.env.TFY_WORKSPACE_FQN || "").trim();
   if (!workspaceFqn.includes(":")) throw new Error("workspace_fqn is required and must look like cluster:workspace");
   const host = resolveHost(config.host, name, workspaceFqn);
 
-  const secrets = String(config.secrets || "").trim();
+  const secrets = String(config.secrets || `${name}-hermes-secrets`).trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,126}$/.test(secrets)) throw new Error("secrets must be the TrueFoundry SecretGroup name");
 
   const skills = stringList(config.skills, "skills");
@@ -475,10 +552,12 @@ export async function readHermesConfig(file) {
     description: String(config.description || "").trim(),
     instructions: String(config.instructions || "").trim(),
     model: String(config.model || DEFAULT_MODEL).trim(),
-    gatewayUrl: normalizeGatewayUrl(config.gateway_url || process.env.OPENAI_BASE_URL),
+    gatewayUrl: normalizeGatewayUrl(config.gateway_url || process.env.OPENAI_BASE_URL || DEFAULT_GATEWAY_URL),
     secrets,
     slack: normalizeSlackAccess(config.slack),
     slackTeamId: String(config.slack_team_id || "").trim(),
+    agentEmail: normalizeOptionalEmail(config.agent_email, "agent_email"),
+    discord: normalizeDiscordConfig(config.discord),
     skills,
     mcpServers: stringList(config.mcp_servers, "mcp_servers").map(normalizeMcpUrl),
     slackInboundArtifactRepo,
@@ -492,8 +571,11 @@ export async function readHermesConfig(file) {
 function resourceNames(config) {
   return {
     volume: `${config.name}-data`,
+    runtimeVolume: resourceNameWithSuffix(config.name, "-runtime-state"),
     controller: `${config.name}-controller`,
+    runtime: `${config.name}-runtime`,
     executor: `${config.name}-executor`,
+    worker: `${config.name}-worker`,
     artifactCleanup: resourceNameWithSuffix(config.name, "-cleanup")
   };
 }
@@ -548,6 +630,20 @@ export function volumeManifest(config) {
   };
 }
 
+export function runtimeVolumeManifest(config) {
+  return {
+    name: resourceNames(config).runtimeVolume,
+    type: "volume",
+    workspace_fqn: config.workspaceFqn,
+    config: {
+      type: "dynamic",
+      size: DEFAULT_VOLUME_SIZE_GI,
+      storage_class: "default",
+      access_modes: ["ReadWriteOnce"]
+    }
+  };
+}
+
 function healthProbe(port) {
   return { config: { type: "http", path: "/api/health", port, scheme: "HTTP" }, initial_delay_seconds: 20, period_seconds: 15, timeout_seconds: 5, failure_threshold: 5 };
 }
@@ -574,6 +670,17 @@ export function controllerManifest(config) {
       HERMES_SLACK_ALLOWED_CHANNELS: csv(config.slack.allowedChannels),
       HERMES_SLACK_ALLOWED_USERS: csv(config.slack.allowedUsers),
       HERMES_SLACK_TEAM_ID: config.slackTeamId,
+      HERMES_AGENT_EMAIL: config.agentEmail || "",
+      AGENTMAIL_API_KEY: config.agentEmail ? secretRef(config, AGENTMAIL_API_SECRET_KEY) : "",
+      AGENTMAIL_WEBHOOK_SECRET: config.agentEmail ? secretRef(config, AGENTMAIL_WEBHOOK_SECRET_KEY) : "",
+      DISCORD_ENABLED: config.discord.enabled ? "true" : "false",
+      DISCORD_BOT_TOKEN: config.discord.enabled ? secretRef(config, DISCORD_BOT_TOKEN_SECRET_KEY) : "",
+      DISCORD_PUBLIC_KEY: config.discord.enabled ? secretRef(config, DISCORD_PUBLIC_KEY_SECRET_KEY) : "",
+      DISCORD_ALLOWED_USERS: csv(config.discord.allowedUsers),
+      DISCORD_ALLOWED_ROLES: csv(config.discord.allowedRoles),
+      DISCORD_HOME_CHANNEL: config.discord.homeChannel,
+      DISCORD_REQUIRE_MENTION: config.discord.requireMention ? "true" : "false",
+      DISCORD_FREE_RESPONSE_CHANNELS: csv(config.discord.freeResponseChannels),
       HERMES_MODEL: config.model,
       HERMES_EXECUTOR_BACKEND: config.executor.backend,
       HERMES_SLACK_RUN_TIMEOUT_MS: "3600000"
@@ -583,6 +690,9 @@ export function controllerManifest(config) {
   }
   if (config.executor.backend === "truefoundry-service") {
     env.HERMES_EXECUTOR_URL = `http://${r.executor}:8788`;
+  }
+  if (config.executor.backend === "hermes-runtime") {
+    env.HERMES_RUNTIME_URL = `http://${r.runtime}:8789`;
   }
   if (config.slackInboundArtifactRepo) {
     env.HERMES_SLACK_INBOUND_ARTIFACT_REPO = config.slackInboundArtifactRepo;
@@ -618,7 +728,15 @@ function executorEnv(config) {
     // Hermes calls the TrueFoundry LLM gateway with this bearer; the gateway
     // authenticates with the TFY API key, not the controller's inbound bearer.
     OPENAI_API_KEY: secretRef(config, "TFY-API-KEY"),
-    HERMES_MODEL: config.model
+    HERMES_MODEL: config.model,
+    HERMES_STT_BASE_URL: config.gatewayUrl,
+    HERMES_STT_API_KEY: secretRef(config, "HERMES-STT-API-KEY"),
+    HERMES_STT_FALLBACK_API_KEY: secretRef(config, "TFY-API-KEY"),
+    HERMES_STT_MODEL: process.env.HERMES_STT_MODEL || "",
+    HERMES_TTS_BASE_URL: config.gatewayUrl,
+    HERMES_TTS_API_KEY: secretRef(config, "HERMES-TTS-API-KEY"),
+    HERMES_TTS_FALLBACK_API_KEY: secretRef(config, "TFY-API-KEY"),
+    HERMES_TTS_MODEL: process.env.HERMES_TTS_MODEL || ""
   };
   if (config.executor.backend === "truefoundry-service") {
     env.HERMES_RUN_TOKEN_SECRET = secretRef(config, "HERMES-RUN-TOKEN-SECRET");
@@ -649,6 +767,20 @@ export function executorManifest(config) {
     trigger: { type: "manual" },
     concurrency_limit: 20,
     retries: 0,
+    image: buildImage(config, "Dockerfile.executor", "node executor/executor.mjs"),
+    resources: executorResources(),
+    env: executorEnv(config)
+  };
+}
+
+export function workerManifest(config) {
+  return {
+    name: resourceNames(config).worker,
+    type: "job",
+    workspace_fqn: config.workspaceFqn,
+    trigger: { type: "manual" },
+    concurrency_limit: 20,
+    retries: 1,
     image: buildImage(config, "Dockerfile.executor", "node executor/executor.mjs"),
     resources: executorResources(),
     env: executorEnv(config)
@@ -711,6 +843,30 @@ export function executorServiceManifest(config) {
     ports: [{ port: 8788, protocol: "TCP", expose: false, app_protocol: "http" }],
     liveness_probe: probe,
     readiness_probe: probe
+  };
+}
+
+export function runtimeManifest(config) {
+  const probe = healthProbe(8789);
+  const env = {
+    ...executorEnv(config),
+    HERMES_RUN_TOKEN_SECRET: secretRef(config, "HERMES-RUN-TOKEN-SECRET"),
+    HERMES_STATE_OWNER: "runtime",
+    HERMES_RUNTIME_MAX_CONCURRENT_RUNS: "1"
+  };
+  return {
+    name: resourceNames(config).runtime,
+    type: "service",
+    workspace_fqn: config.workspaceFqn,
+    image: buildImage(config, "Dockerfile.runtime", "node runtime/server.mjs"),
+    resources: executorResources(),
+    replicas: 1,
+    env,
+    ports: [{ port: 8789, protocol: "TCP", expose: false, app_protocol: "http" }],
+    mounts: [{ type: "volume", mount_path: "/workspace/.hermes", volume_fqn: `tfy-volume://${config.workspaceFqn}:${resourceNames(config).runtimeVolume}` }],
+    liveness_probe: probe,
+    readiness_probe: probe,
+    rollout_strategy: { type: "rolling_update", max_surge_percentage: 0, max_unavailable_percentage: 100 }
   };
 }
 
@@ -837,6 +993,15 @@ function runTokenNeedsWrite(value) {
   return !text || SECRET_PLACEHOLDER_VALUES.has(text) || text.length < 32;
 }
 
+function missingRequiredSecretKeys(config, entries) {
+  const keys = new Set((entries || []).map((entry) => entry.key || entry.name).filter(Boolean));
+  return requiredSecretKeys(config).filter((key) => !keys.has(key));
+}
+
+function secretGroupNeedsUpdate(config, entries, currentRunTokenValue) {
+  return runTokenNeedsWrite(currentRunTokenValue) || missingRequiredSecretKeys(config, entries).length > 0;
+}
+
 async function readHermesSecretsLocal(hermesFile) {
   const secretsPath = path.join(path.dirname(path.resolve(hermesFile)), ".hermes-secrets.local");
   try {
@@ -940,11 +1105,8 @@ async function ensureSecretGroup(config, hermesFile, { skipLiveChecks }) {
   const entries = await listSecretEntries(groupId);
   const byKey = new Map(entries.map((entry) => [entry.key || entry.name, entry]));
   const hermesEntry = byKey.get("HERMES-RUN-TOKEN-SECRET");
-
-  if (hermesEntry?.id) {
-    const current = await fetchSecretValue(hermesEntry.id);
-    if (!runTokenNeedsWrite(current)) return;
-  }
+  const currentRunToken = hermesEntry?.id ? await fetchSecretValue(hermesEntry.id) : null;
+  if (!secretGroupNeedsUpdate(config, entries, currentRunToken)) return;
 
   const payload = await buildSecretsPayloadForPut(config, entries, runToken, tfyApiKey);
   await tfyFetch(`/api/svc/v1/secret-groups/${encodeURIComponent(groupId)}`, {
@@ -959,8 +1121,9 @@ async function checkCollisions(config, allowUpdate) {
   // `workspaceFqn` is camelCase on the wire; `workspace_fqn` is silently
   // ignored and returns an unfiltered tenant page that can hide collisions.
   const rows = rowsOf(await tfyFetch(`/api/svc/v1/apps?workspaceFqn=${encodeURIComponent(config.workspaceFqn)}&limit=200`));
-  const includesExecutor = config.executor.backend === "truefoundry-job" || config.executor.backend === "truefoundry-service";
-  const ours = includesExecutor ? [r.controller, r.executor] : [r.controller];
+  const ours = config.executor.backend === "hermes-runtime"
+    ? [r.controller, r.runtime, r.worker]
+    : [r.controller, r.executor];
   const nameOf = (row) => row.name || row.applicationName;
   const existing = rows.filter((row) => ours.includes(nameOf(row)));
   if (existing.length && !allowUpdate) {
@@ -994,10 +1157,16 @@ export function planManifests(config, { includeSecrets }) {
   const list = [];
   if (includeSecrets) list.push({ filename: `${config.name}-secrets.scaffold.yaml`, manifest: secretsManifest(config) });
   list.push({ filename: `${config.name}-volume.yaml`, manifest: volumeManifest(config) });
-  list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
-  if (config.executor.backend === "truefoundry-job") {
+  if (config.executor.backend === "hermes-runtime") {
+    list.push({ filename: `${config.name}-runtime-volume.yaml`, manifest: runtimeVolumeManifest(config) });
+    list.push({ filename: `${config.name}-runtime.yaml`, manifest: runtimeManifest(config) });
+    list.push({ filename: `${config.name}-worker.yaml`, manifest: workerManifest(config) });
+    list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
+  } else if (config.executor.backend === "truefoundry-job") {
+    list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
     list.push({ filename: `${config.name}-executor.yaml`, manifest: executorManifest(config) });
   } else if (config.executor.backend === "truefoundry-service") {
+    list.push({ filename: `${config.name}-controller.yaml`, manifest: controllerManifest(config) });
     list.push({ filename: `${config.name}-executor.yaml`, manifest: executorServiceManifest(config) });
   }
   if (config.slackInboundArtifactRepo && config.slackInboundArtifactCleanup?.enabled) {
@@ -1103,15 +1272,25 @@ async function runInit(flags = {}) {
     const handle = await prompt(rl, "Agent handle (2-32 chars, lowercase, hyphens)", { required: true, validate: slugifyName });
     const paths = agentPaths(handle);
     const description = await prompt(rl, "Agent description");
+    const instructions = await promptMultiline(rl, "System instructions");
     const model = await prompt(rl, "Model", { def: DEFAULT_MODEL });
+    const skills = await promptList(rl, "Skill FQNs", {
+      validate: (value) => { if (!validateSkillFqn(value)) throw new Error(`invalid skill FQN: ${value}`); }
+    });
+    const mcpServers = await promptList(rl, "MCP server URLs", { validate: normalizeMcpUrl });
+
+    console.log("\nDeployment fields (press Enter to use deploy-time defaults):\n");
     const workspaceFqn = await prompt(rl, "Workspace FQN (cluster:workspace)", {
-      required: true,
+      def: process.env.TFY_WORKSPACE_FQN || "",
       validate: (value) => {
         if (!value.includes(":")) throw new Error("workspace FQN must look like cluster:workspace");
         return value.trim();
       }
     });
-    const gatewayUrl = await prompt(rl, "OpenAI-compatible gateway URL", { required: true, validate: normalizeGatewayUrl });
+    const gatewayUrl = await prompt(rl, "OpenAI-compatible gateway URL", {
+      def: process.env.OPENAI_BASE_URL || DEFAULT_GATEWAY_URL,
+      validate: normalizeGatewayUrl
+    });
     const secretsName = await prompt(rl, "SecretGroup name", {
       def: `${handle}-hermes-secrets`,
       validate: (value) => {
@@ -1127,13 +1306,8 @@ async function runInit(flags = {}) {
     }
 
     console.log("\nOptional fields (press Enter to skip each):\n");
-    const version = await prompt(rl, "Git ref for controller/executor image build", { def: DEFAULT_SOURCE_REF });
+    const version = await prompt(rl, "Git ref for controller/runtime image build", { def: DEFAULT_SOURCE_REF });
     const host = await prompt(rl, "Public controller host URL");
-    const instructions = await promptMultiline(rl, "System instructions (appended each executor turn)");
-    const skills = await promptList(rl, "Skill FQNs", {
-      validate: (value) => { if (!validateSkillFqn(value)) throw new Error(`invalid skill FQN: ${value}`); }
-    });
-    const mcpServers = await promptList(rl, "MCP server URLs", { validate: normalizeMcpUrl });
     let slackTeamId = "";
     let allowedChannels = [];
     let allowedUsers = [];
@@ -1146,16 +1320,18 @@ async function runInit(flags = {}) {
     const runTokenSecret = generateRunTokenSecret();
 
     const hermesDoc = {
-      name: handle,
-      workspace_fqn: workspaceFqn,
-      description,
-      model,
-      gateway_url: gatewayUrl,
-      secrets: secretsName
+      name: handle
     };
+    if (description) hermesDoc.description = description;
+    if (instructions) hermesDoc.instructions = instructions;
+    if (model && model !== DEFAULT_MODEL) hermesDoc.model = model;
+    if (skills.length) hermesDoc.skills = skills;
+    if (mcpServers.length) hermesDoc.mcp_servers = mcpServers;
+    if (workspaceFqn && workspaceFqn !== process.env.TFY_WORKSPACE_FQN) hermesDoc.workspace_fqn = workspaceFqn;
+    if (gatewayUrl && gatewayUrl !== DEFAULT_GATEWAY_URL && gatewayUrl !== process.env.OPENAI_BASE_URL) hermesDoc.gateway_url = gatewayUrl;
+    if (secretsName && secretsName !== `${handle}-hermes-secrets`) hermesDoc.secrets = secretsName;
     if (version && version !== DEFAULT_SOURCE_REF) hermesDoc.version = version;
     if (host) hermesDoc.host = host;
-    if (instructions) hermesDoc.instructions = instructions;
     if (!apiOnly) {
       if (slackTeamId) hermesDoc.slack_team_id = slackTeamId;
       if (allowedChannels.length || allowedUsers.length) {
@@ -1172,7 +1348,7 @@ async function runInit(flags = {}) {
     await writeFile(paths.config, YAML.stringify(hermesDoc, { lineWidth: 0 }));
 
     if (!apiOnly) {
-      const stubManifest = slackManifest({ name: handle, host: resolveHost(null, handle, workspaceFqn), description });
+      const stubManifest = slackManifest({ name: handle, host: resolveHost(host || null, handle, workspaceFqn), description });
       await writeFile(paths.slackManifest, `${JSON.stringify(stubManifest, null, 2)}\n`);
       console.log(`wrote ${paths.slackManifest}`);
     }
@@ -1292,7 +1468,9 @@ export function isDirectInvocation(entryPath = process.argv[1]) {
 export {
   generateRunTokenSecret,
   parseHermesSecretsLocalContent,
-  runTokenNeedsWrite
+  runTokenNeedsWrite,
+  missingRequiredSecretKeys,
+  secretGroupNeedsUpdate
 };
 
 if (isDirectInvocation()) {

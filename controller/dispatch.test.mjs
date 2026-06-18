@@ -4,6 +4,7 @@ import {
   buildWorkPayload,
   dispatchExecutorTurn,
   triggerExecutorService,
+  triggerHermesRuntime,
   triggerTruefoundryJob
 } from "./dispatch.mjs";
 
@@ -62,6 +63,33 @@ describe("triggerExecutorService", () => {
   });
 });
 
+describe("triggerHermesRuntime", () => {
+  it("posts work to the runtime service dispatch endpoint", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        status: 202,
+        text: async () => JSON.stringify({ accepted: true, backend: "hermes-runtime" })
+      };
+    };
+    const work = { run_id: "run_rt", hermes_session_id: "sess_rt", content: "hi", callback_url: "https://c" };
+    const result = await triggerHermesRuntime({
+      runtimeUrl: "http://devrel-assistant-runtime:8789",
+      run: { id: "run_rt" },
+      work,
+      callbackToken: "token-rt",
+      fetchImpl
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/api\/internal\/runs\/run_rt\/dispatch$/);
+    assert.equal(calls[0].init.headers.authorization, "Bearer token-rt");
+    assert.deepEqual(JSON.parse(calls[0].init.body), { work });
+  });
+});
+
 describe("triggerTruefoundryJob", () => {
   it("triggers a TF job that fetches work from the controller", async () => {
     const calls = [];
@@ -108,6 +136,23 @@ describe("dispatchExecutorTurn", () => {
       fetchImpl
     });
     assert.equal(result.accepted, true);
+  });
+
+  it("routes to the runtime backend", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 202,
+      text: async () => JSON.stringify({ accepted: true, backend: "hermes-runtime" })
+    });
+    const result = await dispatchExecutorTurn({
+      backend: "hermes-runtime",
+      runtimeUrl: "http://runtime:8789",
+      run: { id: "run_1" },
+      work: { run_id: "run_1", hermes_session_id: "s", content: "", callback_url: "https://c" },
+      callbackToken: "tok",
+      fetchImpl
+    });
+    assert.equal(result.backend, "hermes-runtime");
   });
 
   it("rejects unknown backends", async () => {

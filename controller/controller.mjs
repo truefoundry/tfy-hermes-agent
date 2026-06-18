@@ -11,7 +11,7 @@ import { stat, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { openDb, prepareStatements, sessionDbPath, now } from "./db.mjs";
 import { publish, subscribe } from "./pubsub.mjs";
@@ -49,6 +49,24 @@ import {
   slackTitle
 } from "./slack.mjs";
 import { ingestSlackFilesToArtifacts } from "./slack-ingest.mjs";
+import {
+  agentMailApi,
+  agentMailPrompt,
+  configuredSecret as configuredAgentMailSecret,
+  extractAgentMailMessage,
+  normalizeAgentEmail,
+  replyAllPath,
+  verifyAgentMailWebhook
+} from "./agentmail.mjs";
+import {
+  discordAccess,
+  discordCommandDefinition,
+  discordPrompt,
+  extractDiscordPrompt,
+  listFromEnv as discordListFromEnv,
+  postDiscordFollowup,
+  verifyDiscordRequest
+} from "./discord.mjs";
 import { writeSse, startSse, endSse } from "./sse.mjs";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +82,7 @@ const HERMES_MODEL = process.env.HERMES_MODEL || "openai-main/gpt-5.5";
 const HERMES_EXECUTOR_BACKEND = process.env.HERMES_EXECUTOR_BACKEND || "truefoundry-job";
 const HERMES_EXECUTOR_NAME = process.env.HERMES_EXECUTOR_NAME || "hermes-executor";
 const HERMES_EXECUTOR_URL = (process.env.HERMES_EXECUTOR_URL || "").replace(/\/+$/, "");
+const HERMES_RUNTIME_URL = (process.env.HERMES_RUNTIME_URL || "").replace(/\/+$/, "");
 // Inbound /v1/* bearer is the TFY API key. We don't mint a separate
 // HERMES_OPENAI_API_KEY: clients hitting this controller already need a TFY
 // API key for any other platform action, and per-agent isolation is best
@@ -74,6 +93,19 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
 const SLACK_INBOUND_ARTIFACT_REPO = process.env.HERMES_SLACK_INBOUND_ARTIFACT_REPO || "";
+const AGENT_EMAIL = normalizeAgentEmail(process.env.HERMES_AGENT_EMAIL || "");
+const AGENTMAIL_API_KEY = process.env.AGENTMAIL_API_KEY || "";
+const AGENTMAIL_WEBHOOK_SECRET = process.env.AGENTMAIL_WEBHOOK_SECRET || "";
+const DISCORD_ENABLED = process.env.DISCORD_ENABLED === "true";
+const DISCORD_PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY || "";
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
+const DISCORD_CONFIG = {
+  allowedUsers: discordListFromEnv(process.env.DISCORD_ALLOWED_USERS),
+  allowedRoles: discordListFromEnv(process.env.DISCORD_ALLOWED_ROLES),
+  homeChannel: process.env.DISCORD_HOME_CHANNEL || "",
+  requireMention: process.env.DISCORD_REQUIRE_MENTION !== "false",
+  freeResponseChannels: discordListFromEnv(process.env.DISCORD_FREE_RESPONSE_CHANNELS)
+};
 const SLACK_STATUS_TEXT = process.env.HERMES_SLACK_STATUS_TEXT || "is thinking...";
 const SLACK_RUN_TIMEOUT_MS = Number(process.env.HERMES_SLACK_RUN_TIMEOUT_MS || 3_600_000);
 const SLACK_STREAM_CHUNK_DELAY_MS = Number(process.env.HERMES_SLACK_STREAM_CHUNK_DELAY_MS || 120);
@@ -270,6 +302,11 @@ function ensureSessionForSlackThread({ teamId, channel, threadTs }) {
   return fresh?.hermes_session_id || sessionId;
 }
 
+function stableSessionId(source, key) {
+  const digest = createHash("sha256").update(`${source}:${key}`).digest("hex").slice(0, 24);
+  return `${source}_${digest}`;
+}
+
 function claimSlackEvent(eventId) {
   if (!eventId) return true;
   return stmts.claimSlackEvent.run(eventId, now()).changes > 0;
@@ -355,6 +392,21 @@ function rejectRawSecretsInPayload(payload) {
   throw error;
 }
 
+function applyDefaultGoalMode(content) {
+  const text = String(content || "");
+  const match = text.match(/^\s*(?:\/goal|goal:)\s*([\s\S]*)$/i);
+  if (!match) return text;
+  const goal = match[1].trim() || text.trim();
+  return [
+    "Goal mode is enabled for this request.",
+    "Work toward the goal until you can give a concrete final state, a blocker, or the next required external input.",
+    "Use configured Hermes tools and subagents as needed. Be explicit about what is complete and what remains.",
+    "",
+    "Goal:",
+    goal
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Run lifecycle
 // ---------------------------------------------------------------------------
@@ -382,6 +434,16 @@ async function tfyGet(apiPath) {
 }
 
 async function probeRunOnPlatform(runId) {
+  if (HERMES_EXECUTOR_BACKEND === "hermes-runtime") {
+    if (!HERMES_RUNTIME_URL) return { found: false, state: null };
+    try {
+      const res = await fetch(`${HERMES_RUNTIME_URL}/api/health`);
+      if (res.ok) return { found: true, state: "running" };
+      return { found: false, state: null };
+    } catch (error) {
+      return { found: false, state: null, error };
+    }
+  }
   if (HERMES_EXECUTOR_BACKEND === "truefoundry-service") {
     if (!HERMES_EXECUTOR_URL) return { found: false, state: null };
     try {
@@ -415,7 +477,7 @@ async function triggerExecutor({ run, agent, content, callbackToken, slack = nul
   const work = buildWorkPayload({
     run,
     agent,
-    content,
+    content: applyDefaultGoalMode(content),
     slack,
     attachments,
     publicBaseUrl: PUBLIC_BASE_URL,
@@ -429,6 +491,7 @@ async function triggerExecutor({ run, agent, content, callbackToken, slack = nul
     tfyWorkspaceFqn: TFY_WORKSPACE_FQN,
     executorName: HERMES_EXECUTOR_NAME,
     executorUrl: HERMES_EXECUTOR_URL,
+    runtimeUrl: HERMES_RUNTIME_URL,
     run,
     work,
     callbackToken,
@@ -968,6 +1031,97 @@ async function processSlackEvent(payload) {
   }
 }
 
+async function processAgentMailEvent(payload) {
+  const agent = loadDefaultAgent();
+  const message = extractAgentMailMessage(payload);
+  if (!message.eventType || !String(message.eventType).startsWith("message.received")) return;
+  if (AGENT_EMAIL && message.inboxEmail && message.inboxEmail !== AGENT_EMAIL) return;
+  if (!message.messageId || !message.inboxId) {
+    throw new Error("AgentMail message webhook is missing inbox_id or message_id");
+  }
+  if (!claimSlackEvent(`agentmail:${message.eventId || message.messageId}`)) return;
+
+  const run = createRun({
+    hermesSessionId: stableSessionId("email", message.threadId || message.messageId),
+    openaiKind: "agentmail"
+  });
+  const dispatched = await dispatchRun({
+    run,
+    agent,
+    content: agentMailPrompt({ message, agent })
+  });
+  if (dispatched.run.status === "failed") {
+    console.error(`[hermes] AgentMail dispatch failed for ${run.id}: ${dispatched.run.error || "unknown error"}`);
+    return;
+  }
+
+  const waited = await subscribeRunUntilTerminal({ runId: run.id, timeoutMs: OPENAI_SYNC_TIMEOUT_MS });
+  if (!waited.run || waited.run.status !== "completed") {
+    console.error(`[hermes] AgentMail run did not complete for ${run.id}: ${waited.run?.error || "timeout"}`);
+    return;
+  }
+  if (!configuredAgentMailSecret(AGENTMAIL_API_KEY)) {
+    console.error(`[hermes] AgentMail API key not configured; run ${run.id} completed but was not emailed`);
+    return;
+  }
+
+  await agentMailApi({
+    apiKey: AGENTMAIL_API_KEY,
+    path: replyAllPath({ inboxId: message.inboxId, messageId: message.messageId }),
+    body: { text: waited.run.result || "Hermes finished, but returned no text." }
+  });
+}
+
+async function processDiscordInteraction(payload) {
+  const agent = loadDefaultAgent();
+  const request = extractDiscordPrompt(payload);
+  const access = discordAccess(DISCORD_CONFIG, payload);
+  if (!access.allowed) {
+    await postDiscordFollowup({
+      applicationId: request.applicationId,
+      token: request.token,
+      content: `This Hermes agent is not available here (${access.reason}).`
+    });
+    return;
+  }
+  if (!request.content) {
+    await postDiscordFollowup({
+      applicationId: request.applicationId,
+      token: request.token,
+      content: "Send a prompt with the Hermes command."
+    });
+    return;
+  }
+  if (!claimSlackEvent(`discord:${payload.id || request.token}`)) return;
+
+  const run = createRun({
+    hermesSessionId: stableSessionId("discord", `${request.guildId || "dm"}:${request.channelId}:${request.userId}`),
+    openaiKind: "discord"
+  });
+  const dispatched = await dispatchRun({
+    run,
+    agent,
+    content: discordPrompt({ request, agent })
+  });
+  if (dispatched.run.status === "failed") {
+    await postDiscordFollowup({
+      applicationId: request.applicationId,
+      token: request.token,
+      content: `I couldn't start Hermes: ${dispatched.run.error || "dispatch failed"}`
+    });
+    return;
+  }
+
+  const waited = await subscribeRunUntilTerminal({ runId: run.id, timeoutMs: OPENAI_SYNC_TIMEOUT_MS });
+  await postDiscordFollowup({
+    applicationId: request.applicationId,
+    token: request.token,
+    content: waited.run?.status === "completed"
+      ? waited.run.result
+      : `I couldn't finish that request: ${waited.run?.error || "Hermes run timed out"}`
+  });
+}
+
 async function handleSlackInteraction(body) {
   const form = new URLSearchParams(body);
   const payload = JSON.parse(form.get("payload") || "{}");
@@ -1347,6 +1501,38 @@ async function handleSlackEvents(req, res) {
   return send(res, 200, { ok: true });
 }
 
+async function handleAgentMailEvents(req, res) {
+  if (!AGENT_EMAIL) return send(res, 404, { error: "AgentMail is not configured for this agent" });
+  const body = await rawBody(req);
+  if (!verifyAgentMailWebhook(req, body, AGENTMAIL_WEBHOOK_SECRET)) {
+    return send(res, 401, { error: "invalid AgentMail signature" });
+  }
+  let payload;
+  try { payload = body ? JSON.parse(body) : {}; }
+  catch { return send(res, 400, { error: "invalid JSON body" }); }
+  processAgentMailEvent(payload).catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+  });
+  return send(res, 200, { ok: true });
+}
+
+async function handleDiscordInteractions(req, res) {
+  if (!DISCORD_ENABLED) return send(res, 404, { error: "Discord is not configured for this agent" });
+  const body = await rawBody(req);
+  if (!verifyDiscordRequest(req, body, DISCORD_PUBLIC_KEY)) {
+    return send(res, 401, { error: "invalid Discord signature" });
+  }
+  let payload;
+  try { payload = body ? JSON.parse(body) : {}; }
+  catch { return send(res, 400, { error: "invalid JSON body" }); }
+  if (payload.type === 1) return send(res, 200, { type: 1 });
+  if (payload.type !== 2) return send(res, 200, { type: 4, data: { content: "Unsupported Discord interaction." } });
+  processDiscordInteraction(payload).catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+  });
+  return send(res, 200, { type: 5 });
+}
+
 async function handleSlackInteractions(req, res) {
   const body = await rawBody(req);
   if (!slack.verifyRequest(req, body)) return send(res, 401, { error: "invalid Slack signature" });
@@ -1379,8 +1565,47 @@ async function handle(req, res) {
       });
     }
 
+    if (method === "GET" && path === "/agentmail/health") {
+      return send(res, 200, {
+        ok: true,
+        agentmail: {
+          enabled: Boolean(AGENT_EMAIL),
+          agentEmail: AGENT_EMAIL,
+          apiKeyConfigured: Boolean(configuredAgentMailSecret(AGENTMAIL_API_KEY)),
+          webhookSecretConfigured: Boolean(configuredAgentMailSecret(AGENTMAIL_WEBHOOK_SECRET))
+        }
+      });
+    }
+
+    if (method === "GET" && path === "/discord/health") {
+      return send(res, 200, {
+        ok: true,
+        discord: {
+          enabled: DISCORD_ENABLED,
+          botTokenConfigured: Boolean(DISCORD_BOT_TOKEN),
+          publicKeyConfigured: Boolean(DISCORD_PUBLIC_KEY),
+          allowedUsers: DISCORD_CONFIG.allowedUsers,
+          allowedRoles: DISCORD_CONFIG.allowedRoles,
+          homeChannel: DISCORD_CONFIG.homeChannel,
+          requireMention: DISCORD_CONFIG.requireMention,
+          freeResponseChannels: DISCORD_CONFIG.freeResponseChannels
+        }
+      });
+    }
+
+    if (method === "GET" && path === "/discord/command") {
+      return send(res, 200, {
+        command: discordCommandDefinition({
+          name: defaultAgentHandle,
+          description: defaultAgentDescription || `Ask ${defaultAgentName}`
+        })
+      });
+    }
+
     if (method === "POST" && path === "/slack/events") return handleSlackEvents(req, res);
     if (method === "POST" && path === "/slack/interactions") return handleSlackInteractions(req, res);
+    if (method === "POST" && path === "/agentmail/events") return handleAgentMailEvents(req, res);
+    if (method === "POST" && path === "/discord/interactions") return handleDiscordInteractions(req, res);
 
     if (method === "GET" && path === "/v1/models") {
       if (!requireOpenAIAuth(req, res)) return;

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -20,6 +20,25 @@ const IMAGE_EXTENSIONS = new Set([
   ".tiff",
   ".tif",
   ".heic"
+]);
+const AUDIO_EXTENSIONS = new Set([
+  ".mp3",
+  ".m4a",
+  ".mp4",
+  ".mpeg",
+  ".mpga",
+  ".wav",
+  ".webm",
+  ".ogg",
+  ".oga",
+  ".opus",
+  ".flac"
+]);
+const PLACEHOLDER_SECRET_VALUES = new Set([
+  "",
+  "replace-in-truefoundry-only",
+  "pending",
+  "pending-tfy-api-key"
 ]);
 
 function executorWorkspaceRoot(env = process.env) {
@@ -102,6 +121,18 @@ function isImageAttachment(attachment) {
   return IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
 }
 
+function isAudioAttachment(attachment) {
+  const mimeType = String(attachment?.mime_type || "").toLowerCase();
+  if (mimeType.startsWith("audio/")) return true;
+  const name = String(attachment?.local_path || attachment?.filename || attachment?.artifact_path || "");
+  return AUDIO_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
+function configuredValue(value) {
+  const text = String(value || "").trim();
+  return text && !PLACEHOLDER_SECRET_VALUES.has(text) ? text : "";
+}
+
 async function downloadAttachment({ attachment, targetPath, maxBytes, fetchImpl = fetch }) {
   if (!attachment?.download_url) throw new Error(`attachment ${attachment?.filename || targetPath} is missing download_url`);
   const res = await fetchImpl(attachment.download_url);
@@ -182,6 +213,74 @@ export function appendMaterializedAttachmentsToPrompt(prompt, attachments) {
       blocks.join("\n")
     ].join("\n")
   ].filter(Boolean).join("\n\n") + "\n";
+}
+
+function sttConfig(env) {
+  const baseUrl = configuredValue(env.HERMES_STT_BASE_URL) || configuredValue(env.OPENAI_BASE_URL);
+  const apiKey = configuredValue(env.HERMES_STT_API_KEY)
+    || configuredValue(env.HERMES_STT_FALLBACK_API_KEY)
+    || configuredValue(env.OPENAI_API_KEY)
+    || configuredValue(env.TFY_API_KEY);
+  const model = configuredValue(env.HERMES_STT_MODEL);
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey, model };
+}
+
+export async function transcribeAudioAttachments({
+  attachments,
+  env = process.env,
+  fetchImpl = fetch
+}) {
+  const audio = (attachments || []).filter(isAudioAttachment);
+  if (!audio.length) return [];
+  const config = sttConfig(env);
+  if (!config.baseUrl || !config.apiKey || !config.model) {
+    return audio.map((attachment) => ({
+      filename: attachment.filename || path.basename(attachment.local_path || "audio"),
+      local_path: attachment.local_path,
+      skipped: true,
+      reason: "HERMES_STT_BASE_URL, HERMES_STT_API_KEY/OPENAI_API_KEY, or HERMES_STT_MODEL is not configured"
+    }));
+  }
+
+  const transcripts = [];
+  for (const attachment of audio) {
+    const filename = attachment.filename || path.basename(attachment.local_path);
+    const bytes = await readFile(attachment.local_path);
+    const form = new FormData();
+    form.append("model", config.model);
+    form.append("file", new Blob([bytes], { type: attachment.mime_type || "application/octet-stream" }), filename);
+    const res = await fetchImpl(`${config.baseUrl}/audio/transcriptions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.apiKey}` },
+      body: form
+    });
+    const text = await res.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      throw new Error(`audio transcription failed for ${filename}: ${res.status} ${text.slice(0, 300)}`);
+    }
+    transcripts.push({
+      filename,
+      local_path: attachment.local_path,
+      text: String(payload.text || payload.transcript || "").trim()
+    });
+  }
+  return transcripts;
+}
+
+export function appendAudioTranscriptsToPrompt(prompt, transcripts) {
+  if (!Array.isArray(transcripts) || !transcripts.length) return String(prompt || "");
+  const blocks = transcripts.map((item) => {
+    if (item.skipped) {
+      return `- filename: ${item.filename}\n  local_path: ${item.local_path}\n  transcription_skipped: ${item.reason}`;
+    }
+    return `- filename: ${item.filename}\n  local_path: ${item.local_path}\n  transcript: |\n    ${String(item.text || "").replace(/\n/g, "\n    ")}`;
+  });
+  return [
+    String(prompt || "").trimEnd(),
+    "Audio transcripts generated through the configured TrueFoundry AI Gateway STT endpoint:",
+    blocks.join("\n")
+  ].join("\n\n") + "\n";
 }
 
 function mcpServerNameFromUrl(value, index) {
@@ -522,11 +621,18 @@ async function runHermes(ctx, work, secrets) {
 
   const turnTimeoutMs = Number(process.env.HARNESS_TURN_TIMEOUT_MS || 3_600_000);
   const { home: hermesHome, manifestSystemPrompt } = await writeHermesConfig(env, model, work);
-  const sessionDownload = await downloadSessionDb(ctx, hermesHome);
+  const runtimeOwnedState = env.HERMES_STATE_OWNER === "runtime";
+  const sessionDownload = runtimeOwnedState
+    ? { downloaded: false, bytes: 0, path: path.join(hermesHome, "state.db"), owner: "runtime" }
+    : await downloadSessionDb(ctx, hermesHome);
   const installedSkills = await installAgentSkills(ctx, env, work.agent?.skills);
   const materializedAttachments = await materializeAttachments({
     work,
     workspaceRoot
+  });
+  const audioTranscripts = await transcribeAudioAttachments({
+    attachments: materializedAttachments,
+    env
   });
   if (materializedAttachments.length) {
     env.HERMES_ATTACHMENTS_DIR = path.dirname(materializedAttachments[0].local_path);
@@ -537,12 +643,28 @@ async function runHermes(ctx, work, secrets) {
         filename: item.filename,
         mime_type: item.mime_type,
         local_path: item.local_path,
-        bytes: item.local_bytes
+          bytes: item.local_bytes
+        }))
+    }));
+  }
+  if (audioTranscripts.length) {
+    await emitRunEvent(ctx, "executor_diagnostic", JSON.stringify({
+      phase: "audio_transcription",
+      count: audioTranscripts.length,
+      skipped: audioTranscripts.filter((item) => item.skipped).length,
+      files: audioTranscripts.map((item) => ({
+        filename: item.filename,
+        local_path: item.local_path,
+        skipped: Boolean(item.skipped),
+        transcript_chars: item.text ? item.text.length : 0
       }))
     }));
   }
 
-  const prompt = appendMaterializedAttachmentsToPrompt(work.content, materializedAttachments);
+  const prompt = appendAudioTranscriptsToPrompt(
+    appendMaterializedAttachmentsToPrompt(work.content, materializedAttachments),
+    audioTranscripts
+  );
   const promptPath = path.join(hermesHome, `prompt-${ctx.runId}.txt`);
   const attachmentsPath = path.join(hermesHome, `attachments-${ctx.runId}.json`);
   const wrapperPath = path.join(hermesHome, "tfy_hermes_oneshot.py");
@@ -704,6 +826,7 @@ if __name__ == "__main__":
     installedSkills: installedSkills.map((skill) => skill.name),
     attachmentCount: materializedAttachments.length,
     imageAttachmentCount: materializedAttachments.filter((attachment) => attachment.hermes_input_type === "image").length,
+    audioTranscriptCount: audioTranscripts.filter((item) => item.text).length,
     manifestSystemPromptConfigured: Boolean(manifestSystemPrompt.trim()),
     manifestSystemPromptChars: manifestSystemPrompt.length,
     openaiBaseUrlConfigured: Boolean(env.OPENAI_BASE_URL),
@@ -711,6 +834,7 @@ if __name__ == "__main__":
     hermesHomeConfigured: Boolean(hermesHome),
     sessionDbDownloaded: sessionDownload.downloaded,
     sessionDbBytes: sessionDownload.bytes,
+    sessionDbOwner: sessionDownload.owner || "controller",
     terminalBackend: env.HERMES_TERMINAL_BACKEND || null
   }));
 
@@ -756,14 +880,17 @@ if __name__ == "__main__":
 export async function executeTurn(work, callbackToken) {
   const ctx = turnContext(work, callbackToken);
   const secrets = [callbackToken].filter(Boolean);
+  const runtimeOwnedState = process.env.HERMES_STATE_OWNER === "runtime";
   try {
     const result = await runHermes(ctx, work, secrets);
-    try {
-      await uploadSessionDb(ctx, executorHermesHome());
-    } catch (uploadError) {
-      const message = errMsg(uploadError);
-      await postJson(ctx, ctx.completePath, { status: "failed", error: `session-db upload failed: ${message}` });
-      throw uploadError;
+    if (!runtimeOwnedState) {
+      try {
+        await uploadSessionDb(ctx, executorHermesHome());
+      } catch (uploadError) {
+        const message = errMsg(uploadError);
+        await postJson(ctx, ctx.completePath, { status: "failed", error: `session-db upload failed: ${message}` });
+        throw uploadError;
+      }
     }
     await postJson(ctx, ctx.completePath, { status: "completed", result });
     return { status: "completed", result };

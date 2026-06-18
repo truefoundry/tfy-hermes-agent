@@ -105,8 +105,31 @@ export async function triggerExecutorService({
   return text ? JSON.parse(text) : { accepted: true, backend: "truefoundry-service" };
 }
 
+export async function triggerHermesRuntime({
+  runtimeUrl,
+  run,
+  work,
+  callbackToken,
+  fetchImpl = fetch
+}) {
+  if (!runtimeUrl) throw new Error("HERMES_RUNTIME_URL is required for hermes-runtime backend");
+  const base = runtimeUrl.replace(/\/+$/, "");
+  const res = await fetchImpl(`${base}/api/internal/runs/${encodeURIComponent(run.id)}/dispatch`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${callbackToken}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ work })
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`runtime dispatch failed ${res.status}: ${text.slice(0, 500)}`);
+  return text ? JSON.parse(text) : { accepted: true, backend: "hermes-runtime" };
+}
+
 export async function dispatchExecutorTurn(ctx) {
   const { backend } = ctx;
+  if (backend === "hermes-runtime") return triggerHermesRuntime(ctx);
   if (backend === "truefoundry-service") return triggerExecutorService(ctx);
   if (backend === "truefoundry-job") return triggerTruefoundryJob(ctx);
   throw new Error(`unsupported HERMES_EXECUTOR_BACKEND: ${backend}`);

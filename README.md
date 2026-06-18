@@ -110,7 +110,7 @@ agents/<name>/
 └── deployments/                # compiled TF manifests (written by deploy)
 ```
 
-The wizard asks required fields first, then executor backend (`truefoundry-job` default or `truefoundry-service` + Daytona), then optional ones (press Enter to skip). Optional: `version`, `host`, `instructions`, `skills`, `mcp_servers`, `slack_team_id`, `slack.allowed_channels`, `slack.allowed_users` (Slack allowlists skipped with `--api-only`). Blank values are omitted from the yaml. Job mode omits `executor` from the yaml; service mode writes `executor` and `terminal`. The `secrets` field is only a name — `deploy` creates the SecretGroup via API.
+The wizard keeps the agent yaml small: `name`, `description`, `instructions`, `model`, `skills`, and `mcp_servers` describe the agent. Deployment fields such as `workspace_fqn`, `gateway_url`, `host`, and `secrets` can still be set in yaml, but `deploy` can also fill them from `TFY_WORKSPACE_FQN`, `OPENAI_BASE_URL` / the default TrueFoundry gateway, `TFY_HOST`, and the default `<name>-hermes-secrets` SecretGroup name. The default executor is `hermes-runtime`; legacy `truefoundry-job` and `truefoundry-service` modes remain available.
 
 Or write the yaml by hand using the [agent config fields](#agent-config-fields) below.
 
@@ -135,7 +135,7 @@ Only needed if you want Slack. Socket Mode is not supported.
 
 For Slack, paste `SLACK-BOT-TOKEN` and `SLACK-SIGNING-SECRET` into that SecretGroup after deploy (tokens from step 3). `deploy` seeds placeholders until you do.
 
-For `executor: truefoundry-service`, also set `DAYTONA-API-KEY` in the SecretGroup before tool-using turns.
+For `executor: truefoundry-service`, also set `DAYTONA-API-KEY` in the SecretGroup before tool-using turns. The default `hermes-runtime` path does not require Daytona.
 
 Manual SecretGroup creation is only needed if `deploy` cannot discover a secret-store integration in your tenant.
 
@@ -149,9 +149,12 @@ This compiles into `agents/<name>/deployments/`:
 
 | File | Resource | What it is |
 |---|---|---|
-| `<name>-volume.yaml` | Volume | 10Gi RWO PVC at `/data` on the controller (session state) |
+| `<name>-volume.yaml` | Volume | 10Gi RWO PVC at `/data` on the controller (control state) |
+| `<name>-runtime-volume.yaml` | Volume | 10Gi RWO PVC at `/workspace/.hermes` on the runtime (Hermes state) |
+| `<name>-runtime.yaml` | Service | Private stateful Hermes runtime; single active turn by default |
+| `<name>-worker.yaml` | Job | Manual worker image for async/maintenance execution surfaces |
 | `<name>-controller.yaml` | Service | Long-running HTTP service (Slack + `/v1/*`) |
-| `<name>-executor.yaml` | Job or Service | Hermes runner (`truefoundry-job` default, or internal Service for `truefoundry-service`) |
+| `<name>-executor.yaml` | Job or Service | Only for legacy `truefoundry-job` / `truefoundry-service` backends |
 
 SecretGroup is **not** a deployments file — `deploy` provisions it via API before apply.
 
@@ -162,7 +165,7 @@ tfy-hermes-agent deploy <name>
 # or: tfy-hermes-agent deploy agents/<name>/<name>.yaml
 ```
 
-`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order (volume → controller → executor, plus artifact cleanup when Slack artifact storage is enabled).
+`deploy` compiles to `agents/<name>/deployments/`, then runs `tfy apply -f` on each file in order. The default order is controller volume → runtime volume → runtime → worker → controller, plus artifact cleanup when Slack artifact storage is enabled. Legacy executor backends keep the old volume → controller → executor order.
 
 Flags:
 
@@ -170,7 +173,7 @@ Flags:
 - `--emit-manifests <dir>` — write compiled yaml to a custom directory instead of `deployments/`.
 - `--skip-live-checks` — compile only; does not apply or provision secrets.
 
-After a git-source image change, rebuild with `tfy deploy --force -f agents/<name>/deployments/<name>-controller.yaml` (and executor) — not plain `tfy apply`.
+After a git-source image change, rebuild the changed service manifests with `tfy deploy --force -f`, usually `<name>-runtime.yaml` and `<name>-controller.yaml` for the default topology — not plain `tfy apply`.
 
 For Slack deployments, after deploy confirm **Event Subscriptions** and **Interactivity** URLs match your controller host:
 
@@ -201,24 +204,43 @@ curl -fsS -H "Authorization: Bearer <TFY-API-KEY>" https://<host>/v1/models
 
 Send a Slack mention or call `/v1/chat/completions` to confirm end-to-end.
 
+Optional connector health checks:
+
+```bash
+curl -fsS https://<host>/agentmail/health
+curl -fsS https://<host>/discord/health
+```
+
+Connector URLs:
+
+- AgentMail webhook: `https://<host>/agentmail/events`
+- Discord interactions endpoint: `https://<host>/discord/interactions`
+- Discord slash command definition: `https://<host>/discord/command`
+
+Voice transcription is enabled by default for downloaded audio attachments when `HERMES_STT_MODEL` and gateway credentials are configured in the executor environment. Goal mode is enabled by default for prompts starting with `/goal` or `goal:`. Proactive schedules should run as TrueFoundry Scheduled Jobs using `node controller/scheduled-runner.mjs`, not in-container cron; set `HERMES_SCHEDULE_PROMPT` plus either `HERMES_SCHEDULE_SLACK_CHANNEL` or `HERMES_SCHEDULE_AGENTMAIL_INBOX_ID` + `HERMES_SCHEDULE_EMAIL_TO` for delivery.
+
 ---
 
 ## Agent config fields
 
 ```yaml
-# Required
+# Common user-authored fields
 name: devrel-assistant
-workspace_fqn: tfy-ea-dev-eo-az:sai-ws
-gateway_url: https://your-gateway/v1
-model: openai-main/gpt-5.5
-secrets: devrel-assistant-hermes-secrets
-
-# Optional
-version: main
-host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 description: Helps with DevRel launches.
 instructions: |
   Be concise and evidence-driven.
+model: openai-main/gpt-5.5
+skills:
+  - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
+mcp_servers:
+  - https://mcp-gateway.example.com/servers/linear
+
+# Optional deployment/operator overrides
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+gateway_url: https://your-gateway/v1
+secrets: devrel-assistant-hermes-secrets
+version: main
+host: https://devrel-assistant-sai-ws.ml.tfy-eo.truefoundry.cloud
 slack:
   allowed_channels: [C0123456789]
   allowed_users: [U0123456789]
@@ -234,20 +256,24 @@ slack_inbound_artifact_cleanup:
   #   type: email
   #   notification_channel: tfy-eo:notification-channel:ops-email
   #   to_emails: [ops@example.com]
-skills:
-  - agent-skill:tfy-eo/sai-mlrepo/humanizer:1
-mcp_servers:
-  - https://mcp-gateway.example.com/servers/linear
+agent_email: devrel-assistant@agent.email
+discord:
+  enabled: true
+  allowed_users: ["123456789012345678"]
+  allowed_roles: ["234567890123456789"]
+  home_channel: "345678901234567890"
+  require_mention: true
+  free_response_channels: ["456789012345678901"]
 ```
 
 | Field | Required | Notes |
 |---|---|---|
 | `name` | yes | Lowercase handle, 2–32 chars, letters/numbers/hyphens. Becomes Slack bot name and TF resource prefix. |
-| `workspace_fqn` | yes | `cluster:workspace`, e.g. `tfy-ea-dev-eo-az:sai-ws`. |
-| `gateway_url` | yes | OpenAI-compatible LLM gateway URL (TrueFoundry AI Gateway `/v1` endpoint). |
-| `model` | yes | Model id your gateway accepts, e.g. `openai-main/gpt-5.5`. |
-| `secrets` | yes | SecretGroup name (default `<name>-hermes-secrets`); `deploy` creates and populates `TFY-API-KEY` + `HERMES-RUN-TOKEN-SECRET`. |
-| `version` | no | Git ref to build controller/executor images from (`main`, tag, or commit SHA). Default `main`. Slashed branch names fail on TF's git puller — use a commit SHA instead. `init` prompts; omitted from yaml if left as default. |
+| `workspace_fqn` | no | `cluster:workspace`, e.g. `tfy-ea-dev-eo-az:sai-ws`. Defaults to `TFY_WORKSPACE_FQN` at deploy time. |
+| `gateway_url` | no | OpenAI-compatible LLM gateway URL. Defaults to `OPENAI_BASE_URL`, then `https://gateway.truefoundry.ai`. |
+| `model` | no | Model id your gateway accepts. Defaults to `openai-main/gpt-5.5`. |
+| `secrets` | no | SecretGroup name. Defaults to `<name>-hermes-secrets`; `deploy` creates and populates `TFY-API-KEY` + `HERMES-RUN-TOKEN-SECRET`. |
+| `version` | no | Git ref to build controller/runtime/worker images from (`main`, tag, or commit SHA). Default `main`. Slashed branch names fail on TF's git puller — use a commit SHA instead. |
 | `host` | no | Public controller URL. Derived from `TFY_HOST` + `name` + workspace if omitted. `init` prompts. |
 | `description` | no | Short agent description (Slack assistant view). `init` prompts (can be blank). |
 | `instructions` | no | System prompt appended on each executor turn. `init` prompts (multiline). |
@@ -256,9 +282,11 @@ mcp_servers:
 | `slack_team_id` | no | Slack team id if you need to pin a workspace. `init` prompts. |
 | `slack_inbound_artifact_repo` | no | ML repo name or `tfy-mlrepo://` FQN for Slack file uploads. Required if users will send Slack attachments. |
 | `slack_inbound_artifact_cleanup` | no | Cleanup policy for Slack artifact versions. Defaults to enabled when `slack_inbound_artifact_repo` is set, with 7-day retention, weekly cron `0 2 * * 0`, and UTC timezone. Optional `failure_alert` emits job failure alerts through an existing TrueFoundry email, Slack bot, or Slack webhook notification channel. |
+| `agent_email` | no | AgentMail email address for this assistant. Enables `/agentmail/events`; API key and webhook secret stay in the SecretGroup. |
+| `discord` | no | Discord interaction bridge config. `enabled: true` exposes `/discord/interactions`; allowlists use Discord numeric IDs. |
 | `skills` | no | Version-pinned agent-skill FQNs, e.g. `agent-skill:tenant/repo/skill:1`. `init` prompts. |
 | `mcp_servers` | no | TrueFoundry MCP Gateway URLs. `init` prompts. |
-| `executor` | no | `truefoundry-job` (default) or `truefoundry-service`. `init` prompts; job default omitted from yaml. |
+| `executor` | no | `hermes-runtime` (default), `truefoundry-job`, or `truefoundry-service`. Default omitted from yaml. |
 | `terminal` | no | Only for `truefoundry-service`. Defaults to `daytona`. `init` writes when service is chosen. |
 
 ---
@@ -281,6 +309,11 @@ Then say **"create a Hermes Slack agent"**.
 | `/api/internal/*` (executor callbacks) | Per-run HMAC bearer | Minted from SecretGroup `HERMES-RUN-TOKEN-SECRET` |
 | `/slack/*` (webhooks) | `X-Slack-Signature` HMAC | Verified with SecretGroup `SLACK-SIGNING-SECRET` |
 | Slack outbound messages | Bot token | SecretGroup `SLACK-BOT-TOKEN` |
+| AgentMail webhooks | Svix signature | SecretGroup `AGENTMAIL-WEBHOOK-SECRET` |
+| AgentMail API replies | API key | SecretGroup `AGENTMAIL-API-KEY` |
+| Discord interactions | Ed25519 public key | SecretGroup `DISCORD-PUBLIC-KEY` |
+| Discord bot operations | Bot token | SecretGroup `DISCORD-BOT-TOKEN` |
 | LLM calls (executor) | Gateway bearer | SecretGroup `TFY-API-KEY` via `OPENAI_API_KEY` |
+| STT/TTS calls (executor) | Gateway bearer | SecretGroup `HERMES-STT-API-KEY` / `HERMES-TTS-API-KEY`, falling back to `TFY-API-KEY` when unset |
 | Slack artifact cleanup job | Scoped TrueFoundry virtual-account token | SecretGroup `HERMES-ARTIFACT-CLEANUP-TFY-API-KEY` |
 | Daytona tool sandbox | API key | SecretGroup `DAYTONA-API-KEY` (only when `executor: truefoundry-service`) |

@@ -4,29 +4,33 @@ This file is read by Claude Code when it opens this repo. Keep it short.
 
 ## What this repo is
 
-A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes-agent` on PyPI). Three runtime pieces + a CLI:
+A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes-agent` on PyPI). Default topology is controller + runtime + worker, plus a CLI:
 
 Capability questions must check both surfaces: this wrapper's config/runtime and upstream `nousresearch/hermes-agent`. This repo is the deployment surface only; do not infer Hermes Agent's full capability boundary from wrapper code alone.
 
-- `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run executor callbacks. Owns the only persistent state (SQLite on a controller-only PVC).
-- `executor/executor.mjs` — turn runner for `truefoundry-job` (TF Job entrypoint). `executor/server.mjs` — internal HTTP service for `truefoundry-service`. Both decode a signed payload, shuttle the session DB, run Hermes, post results back.
-- `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard: required fields, executor backend, optional fields; `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).
+The product goal is to run Hermes Agent on TrueFoundry-controlled modules — compute, SecretGroups, Services, Jobs, volumes, logs, and manifests — so every TrueFoundry department can create its own reliable Hermes-backed assistant without running upstream Hermes directly.
+
+- `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run runtime callbacks. Owns control state on a controller PVC.
+- `runtime/server.mjs` — private stateful Hermes Runtime Service. Runs turns against persistent `/workspace/.hermes` state on a runtime PVC; concurrency defaults to 1 for SQLite safety.
+- `executor/executor.mjs` — worker/legacy turn runner for manual worker jobs and `truefoundry-job`. `executor/server.mjs` — legacy internal HTTP service for `truefoundry-service`. Legacy executor modes shuttle the session DB over HTTP.
+- `bin/tfy-hermes-agent.mjs` — CLI. `init` writes a small agent manifest; `deploy` resolves operator defaults, auto-provisions SecretGroup secrets, validates, and applies manifests.
 - `skills/deploy-hermes-slack-agent/` — runbook used by AI coding agents to drive an end-to-end deploy.
 
-**Executor modes** (agent yaml `executor`, default `truefoundry-job`):
+**Executor modes** (agent yaml `executor`, default `hermes-runtime`):
 
 | Value | Turn runs in | Tool sandbox |
 |---|---|---|
-| `truefoundry-job` | Disposable TF Job | Job container |
-| `truefoundry-service` | Long-lived executor Service | Hermes `terminal.backend: daytona` (default) |
+| `hermes-runtime` | Stateful private runtime Service | Runtime container |
+| `truefoundry-job` | Legacy disposable TF Job | Job container |
+| `truefoundry-service` | Legacy long-lived executor Service | Hermes `terminal.backend: daytona` (default) |
 
-`truefoundry-service` adds `DAYTONA-API-KEY` to the SecretGroup.
+Only `truefoundry-service` adds `DAYTONA-API-KEY` to the SecretGroup.
 
 ## Don't do these things
 
 - **Don't vendor Hermes source here.** Hermes is a pip dep (`hermes-agent[mcp]==0.16.0`) pulled into the executor image. Wrapping it is fine; modifying its internals is not.
 - **Don't store secrets in plain files.** All secrets flow through TrueFoundry SecretGroups via `tfy-secret://...` env references. Base keys: `TFY-API-KEY`, `HERMES-RUN-TOKEN-SECRET`, `SLACK-BOT-TOKEN`, `SLACK-SIGNING-SECRET`. Add `DAYTONA-API-KEY` when `executor: truefoundry-service`. **Hyphens only** — TrueFoundry rejects underscores in secret key names.
-- **Don't write to the controller's volume from the executor.** The executor uses its container's ephemeral FS. Session DBs travel over HTTP.
+- **Don't write to the controller's volume from runtime/executor code.** The default runtime owns its own `/workspace/.hermes` PVC. Legacy executors use ephemeral FS and session DB HTTP shuttle.
 - **Don't use the TrueFoundry Python SDK.** Use `tfy` CLI, the deploy skills, or raw REST endpoints (`/api/svc/v1/*`, `/api/ml/v1/*`). The SDK has Pydantic v1 issues on Python 3.13+.
 - **Don't add a new env knob for something `hermes.yaml` could express.** Prefer manifest fields.
 - **Don't try TrueFoundry's ingress-level `auth: { type: basic_auth }`** on the same port that serves Slack. Slack webhooks can't speak Basic. We tried; we reverted. See git log for `Wire ingress-level basic_auth` and its revert.

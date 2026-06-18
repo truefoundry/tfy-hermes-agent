@@ -10,6 +10,7 @@
     "AGENTS.md",
     "Dockerfile.controller",
     "Dockerfile.executor",
+    "Dockerfile.runtime",
     "bin/tfy-hermes-agent.mjs",
     "controller/controller.mjs",
     "controller/db.mjs",
@@ -18,6 +19,9 @@
     "controller/pubsub.mjs",
     "controller/reconciler.mjs",
     "controller/slack.mjs",
+    "controller/agentmail.mjs",
+    "controller/discord.mjs",
+    "controller/scheduled-runner.mjs",
     "controller/artifacts.mjs",
     "controller/slack-ingest.mjs",
     "controller/slack-artifact-live-smoke.mjs",
@@ -29,6 +33,7 @@
     "executor/run-turn.mjs",
     "executor/server.mjs",
     "executor/tokens.mjs",
+    "runtime/server.mjs",
     "examples/",
     "skills/"
   ],
@@ -38,8 +43,8 @@
     "smoke:attachments": "node executor/attachment-workflow-smoke.mjs",
     "smoke:live": "node scripts/hermes-live-smoke.mjs",
     "smoke:slack-artifacts:live": "node controller/slack-artifact-live-smoke.mjs",
-    "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs controller/session-continuity.test.mjs controller/slack-files.test.mjs controller/slack-plan.test.mjs controller/artifact-cleanup.test.mjs controller/dispatch.test.mjs",
-    "check": "node --check controller/controller.mjs && node --check controller/dispatch.mjs && node --check controller/util.mjs && node --check executor/executor.mjs && node --check executor/run-turn.mjs && node --check executor/server.mjs && node --check executor/tokens.mjs && node --check executor/attachment-workflow-smoke.mjs && node --check controller/slack-artifact-live-smoke.mjs && node --check controller/artifact-cleanup.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && node --check controller/slack-files.test.mjs && node --check controller/slack-plan.test.mjs && node --check controller/artifact-cleanup.test.mjs && node --check controller/dispatch.test.mjs && node --check controller/artifacts.mjs && node --check controller/slack-ingest.mjs && npm test && npm run smoke:attachments"
+    "test": "node --test controller/openai-adapter.test.mjs bin/compiler.test.mjs controller/session-continuity.test.mjs controller/slack-files.test.mjs controller/slack-plan.test.mjs controller/artifact-cleanup.test.mjs controller/dispatch.test.mjs controller/agentmail.test.mjs controller/discord.test.mjs executor/voice-transcription.test.mjs",
+    "check": "node --check controller/controller.mjs && node --check controller/dispatch.mjs && node --check controller/util.mjs && node --check executor/executor.mjs && node --check executor/run-turn.mjs && node --check executor/server.mjs && node --check runtime/server.mjs && node --check executor/tokens.mjs && node --check executor/attachment-workflow-smoke.mjs && node --check controller/slack-artifact-live-smoke.mjs && node --check controller/artifact-cleanup.mjs && node --check controller/scheduled-runner.mjs && node --check bin/tfy-hermes-agent.mjs && node --check controller/openai-adapter.test.mjs && node --check bin/compiler.test.mjs && node --check controller/session-continuity.test.mjs && node --check controller/slack-files.test.mjs && node --check controller/slack-plan.test.mjs && node --check controller/artifact-cleanup.test.mjs && node --check controller/dispatch.test.mjs && node --check controller/agentmail.test.mjs && node --check controller/discord.test.mjs && node --check executor/voice-transcription.test.mjs && node --check controller/artifacts.mjs && node --check controller/slack-ingest.mjs && node --check controller/agentmail.mjs && node --check controller/discord.mjs && npm test && npm run smoke:attachments"
   },
   "engines": {
     "node": ">=22"

@@ -1,0 +1,67 @@
+name: hermes-test-agent-runtime
+type: service
+workspace_fqn: tfy-ea-dev-eo-az:sai-ws
+image:
+  type: build
+  build_source:
+    type: git
+    repo_url: https://github.com/truefoundry/tfy-hermes-agent
+    branch_name: a5bfdf4aa38c894a1deafcca71fc3e97bb9906b7
+    ref: a5bfdf4aa38c894a1deafcca71fc3e97bb9906b7
+  build_spec:
+    type: dockerfile
+    dockerfile_path: Dockerfile.runtime
+    build_context_path: .
+    command: node runtime/server.mjs
+resources:
+  cpu_request: 0.1
+  cpu_limit: 2
+  memory_request: 2048
+  memory_limit: 4096
+  ephemeral_storage_request: 8000
+  ephemeral_storage_limit: 16000
+replicas: 1
+env:
+  HOME: /workspace
+  HERMES_HOME: /workspace/.hermes
+  HARNESS_TURN_TIMEOUT_MS: "3600000"
+  TFY_HOST: https://tfy-eo.truefoundry.cloud
+  TFY_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  OPENAI_BASE_URL: https://gateway.truefoundry.ai
+  OPENAI_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_MODEL: openai-main/gpt-5.5
+  HERMES_STT_BASE_URL: https://gateway.truefoundry.ai
+  HERMES_STT_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-STT-API-KEY
+  HERMES_STT_FALLBACK_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_STT_MODEL: ""
+  HERMES_TTS_BASE_URL: https://gateway.truefoundry.ai
+  HERMES_TTS_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-TTS-API-KEY
+  HERMES_TTS_FALLBACK_API_KEY: tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY
+  HERMES_TTS_MODEL: ""
+  HERMES_RUN_TOKEN_SECRET: tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-RUN-TOKEN-SECRET
+  HERMES_STATE_OWNER: runtime
+  HERMES_RUNTIME_MAX_CONCURRENT_RUNS: "1"
+ports:
+  - port: 8789
+    protocol: TCP
+    expose: false
+    app_protocol: http
+mounts:
+  - type: volume
+    mount_path: /workspace/.hermes
+    volume_fqn: tfy-volume://tfy-ea-dev-eo-az:sai-ws:hermes-test-agen-runtime-state
+liveness_probe: &a1
+  config:
+    type: http
+    path: /api/health
+    port: 8789
+    scheme: HTTP
+  initial_delay_seconds: 20
+  period_seconds: 15
+  timeout_seconds: 5
+  failure_threshold: 5
+readiness_probe: *a1
+rollout_strategy:
+  type: rolling_update
+  max_surge_percentage: 0
+  max_unavailable_percentage: 100

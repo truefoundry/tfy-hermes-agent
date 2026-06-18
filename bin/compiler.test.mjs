@@ -15,6 +15,9 @@ import {
   controllerManifest,
   executorManifest,
   executorServiceManifest,
+  runtimeManifest,
+  runtimeVolumeManifest,
+  workerManifest,
   volumeManifest,
   secretsManifest,
   slackManifest,
@@ -36,6 +39,8 @@ import {
   generateRunTokenSecret,
   parseHermesSecretsLocalContent,
   runTokenNeedsWrite,
+  missingRequiredSecretKeys,
+  secretGroupNeedsUpdate,
   agentPaths,
   resolveAgentConfigPath
 } from "./tfy-hermes-agent.mjs";
@@ -58,6 +63,15 @@ function fakeConfig(overrides = {}) {
     secrets: "devrel-assistant-hermes-secrets",
     slack: { allowedChannels: ["C0123456789"], allowedUsers: ["U0123456789"] },
     slackTeamId: "",
+    agentEmail: "",
+    discord: {
+      enabled: false,
+      allowedUsers: [],
+      allowedRoles: [],
+      homeChannel: "",
+      requireMention: true,
+      freeResponseChannels: []
+    },
     skills: ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"],
     mcpServers: ["https://mcp-gateway.example.com/servers/posthog"],
     executor: { backend: "truefoundry-job" },
@@ -92,6 +106,30 @@ test("runTokenNeedsWrite treats placeholders and short values as unset", () => {
   assert.equal(runTokenNeedsWrite("a".repeat(32)), false);
 });
 
+test("secretGroupNeedsUpdate catches newly required keys even with a valid run token", () => {
+  const validRunToken = "a".repeat(32);
+  const entries = [
+    { key: "TFY-API-KEY" },
+    { key: "HERMES-RUN-TOKEN-SECRET" },
+    { key: "SLACK-BOT-TOKEN" },
+    { key: "SLACK-SIGNING-SECRET" }
+  ];
+
+  assert.deepEqual(missingRequiredSecretKeys(fakeConfig(), entries), [
+    "HERMES-STT-API-KEY",
+    "HERMES-TTS-API-KEY"
+  ]);
+  assert.equal(secretGroupNeedsUpdate(fakeConfig(), entries, validRunToken), true);
+});
+
+test("secretGroupNeedsUpdate is false when required keys and run token are valid", () => {
+  const validRunToken = "a".repeat(32);
+  const entries = requiredSecretKeys(fakeConfig()).map((key) => ({ key }));
+
+  assert.deepEqual(missingRequiredSecretKeys(fakeConfig(), entries), []);
+  assert.equal(secretGroupNeedsUpdate(fakeConfig(), entries, validRunToken), false);
+});
+
 test("generateRunTokenSecret returns 64 hex chars (32 bytes)", () => {
   const secret = generateRunTokenSecret();
   assert.match(secret, /^[0-9a-f]{64}$/);
@@ -122,8 +160,9 @@ test("volumeManifest provisions one RWO controller PVC at the configured workspa
   assert.ok(Number.isFinite(manifest.config.size) && manifest.config.size > 0);
 });
 
-test("normalizeExecutorConfig defaults to truefoundry-job", () => {
-  assert.deepEqual(normalizeExecutorConfig(undefined), { backend: "truefoundry-job" });
+test("normalizeExecutorConfig defaults to hermes-runtime", () => {
+  assert.deepEqual(normalizeExecutorConfig(undefined), { backend: "hermes-runtime" });
+  assert.deepEqual(normalizeExecutorConfig("runtime"), { backend: "hermes-runtime" });
   assert.deepEqual(normalizeExecutorConfig("tfy-job"), { backend: "truefoundry-job" });
   assert.deepEqual(normalizeExecutorConfig("truefoundry"), { backend: "truefoundry-job" });
   assert.deepEqual(normalizeExecutorConfig("truefoundry-service"), { backend: "truefoundry-service" });
@@ -135,13 +174,14 @@ test("normalizeExecutorConfig rejects extra keys and unknown backends", () => {
     () => normalizeExecutorConfig({ backend: "truefoundry-job", snapshot: "x" }),
     /accepts only backend/
   );
-  assert.throws(() => normalizeExecutorConfig("kubernetes"), /executor must be truefoundry-job or truefoundry-service/);
+  assert.throws(() => normalizeExecutorConfig("kubernetes"), /executor must be hermes-runtime, truefoundry-job, or truefoundry-service/);
   assert.throws(() => normalizeExecutorConfig("daytona"), /executor daytona is not supported/);
 });
 
-test("initExecutorYamlFields omits executor for job default and writes service + terminal for service mode", () => {
+test("initExecutorYamlFields omits executor for runtime/default and job, writes service + terminal for service mode", () => {
   assert.deepEqual(initExecutorYamlFields("truefoundry-job"), {});
   assert.deepEqual(initExecutorYamlFields(undefined), {});
+  assert.deepEqual(initExecutorYamlFields("hermes-runtime"), {});
   assert.deepEqual(initExecutorYamlFields("truefoundry-service"), {
     executor: "truefoundry-service",
     terminal: { backend: "daytona" }
@@ -162,13 +202,23 @@ test("controllerManifest wires truefoundry-service executor URL", () => {
   assert.equal(manifest.env.HERMES_EXECUTOR_NAME, undefined);
 });
 
+test("controllerManifest wires hermes-runtime URL", () => {
+  const manifest = controllerManifest(fakeConfig({ executor: { backend: "hermes-runtime" } }));
+  assert.equal(manifest.env.HERMES_EXECUTOR_BACKEND, "hermes-runtime");
+  assert.equal(manifest.env.HERMES_RUNTIME_URL, "http://devrel-assistant-runtime:8789");
+  assert.equal(manifest.env.HERMES_EXECUTOR_NAME, undefined);
+  assert.equal(manifest.env.HERMES_EXECUTOR_URL, undefined);
+});
+
 test("requiredSecretKeys adds DAYTONA-API-KEY for truefoundry-service backend", () => {
   assert.deepEqual(requiredSecretKeys(fakeConfig()).sort(), [
     "HERMES-RUN-TOKEN-SECRET",
+    "HERMES-STT-API-KEY",
+    "HERMES-TTS-API-KEY",
     "SLACK-BOT-TOKEN",
     "SLACK-SIGNING-SECRET",
     "TFY-API-KEY"
-  ]);
+  ].sort());
   assert.ok(requiredSecretKeys(fakeConfig({
     executor: { backend: "truefoundry-service" }
   })).includes("DAYTONA-API-KEY"));
@@ -176,6 +226,32 @@ test("requiredSecretKeys adds DAYTONA-API-KEY for truefoundry-service backend", 
     slackInboundArtifactRepo: "hermes-inbound-artifacts-prod",
     slackInboundArtifactCleanup: { enabled: true }
   })).includes("HERMES-ARTIFACT-CLEANUP-TFY-API-KEY"));
+  assert.ok(requiredSecretKeys(fakeConfig({
+    agentEmail: "devrel-assistant@agent.email"
+  })).includes("AGENTMAIL-API-KEY"));
+  assert.ok(requiredSecretKeys(fakeConfig({
+    agentEmail: "devrel-assistant@agent.email"
+  })).includes("AGENTMAIL-WEBHOOK-SECRET"));
+  assert.ok(requiredSecretKeys(fakeConfig({
+    discord: {
+      enabled: true,
+      allowedUsers: [],
+      allowedRoles: [],
+      homeChannel: "",
+      requireMention: true,
+      freeResponseChannels: []
+    }
+  })).includes("DISCORD-BOT-TOKEN"));
+  assert.ok(requiredSecretKeys(fakeConfig({
+    discord: {
+      enabled: true,
+      allowedUsers: [],
+      allowedRoles: [],
+      homeChannel: "",
+      requireMention: true,
+      freeResponseChannels: []
+    }
+  })).includes("DISCORD-PUBLIC-KEY"));
 });
 
 test("daytonaPlatformEnv exposes platform-owned defaults", () => {
@@ -207,6 +283,8 @@ test("controllerManifest builds a single-replica Service pointing at Dockerfile.
   // Executor reference is wired so the controller can dispatch turns.
   assert.equal(manifest.env.HERMES_EXECUTOR_BACKEND, "truefoundry-job");
   assert.equal(manifest.env.HERMES_EXECUTOR_NAME, "devrel-assistant-executor");
+  assert.equal(manifest.env.HERMES_AGENT_EMAIL, "");
+  assert.equal(manifest.env.DISCORD_ENABLED, "false");
 });
 
 test("executorManifest builds a Job template that runs the executor and mounts no volume", () => {
@@ -219,6 +297,8 @@ test("executorManifest builds a Job template that runs the executor and mounts n
   assert.equal(manifest.env.HERMES_HOME, "/workspace/.hermes");
   // OPENAI_API_KEY is referenced via the SecretGroup, never inline.
   assert.match(manifest.env.OPENAI_API_KEY, /^tfy-secret:\/\//);
+  assert.match(manifest.env.HERMES_STT_API_KEY, /HERMES-STT-API-KEY/);
+  assert.match(manifest.env.HERMES_TTS_API_KEY, /HERMES-TTS-API-KEY/);
 });
 
 test("executorServiceManifest builds a Service for internal dispatch", () => {
@@ -236,11 +316,43 @@ test("executorServiceManifest builds a Service for internal dispatch", () => {
   assert.equal(manifest.liveness_probe.config.port, 8788);
 });
 
+test("runtimeManifest builds the stateful Hermes Runtime Service", () => {
+  const config = fakeConfig({ executor: { backend: "hermes-runtime" } });
+  const volume = runtimeVolumeManifest(config);
+  assert.equal(volume.type, "volume");
+  assert.equal(volume.name, "devrel-assistant-runtime-state");
+
+  const manifest = runtimeManifest(config);
+  assert.equal(manifest.type, "service");
+  assert.equal(manifest.name, "devrel-assistant-runtime");
+  assert.equal(manifest.replicas, 1);
+  assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.runtime");
+  assert.equal(manifest.image.build_spec.command, "node runtime/server.mjs");
+  assert.equal(manifest.ports[0].port, 8789);
+  assert.equal(manifest.ports[0].expose, false);
+  assert.equal(manifest.env.HERMES_STATE_OWNER, "runtime");
+  assert.equal(manifest.env.HERMES_RUNTIME_MAX_CONCURRENT_RUNS, "1");
+  assert.match(manifest.env.HERMES_RUN_TOKEN_SECRET, /HERMES-RUN-TOKEN-SECRET/);
+  assert.equal(manifest.mounts[0].mount_path, "/workspace/.hermes");
+  assert.match(manifest.mounts[0].volume_fqn, /devrel-assistant-runtime-state$/);
+});
+
+test("workerManifest builds a disposable worker Job", () => {
+  const manifest = workerManifest(fakeConfig({ executor: { backend: "hermes-runtime" } }));
+  assert.equal(manifest.type, "job");
+  assert.equal(manifest.name, "devrel-assistant-worker");
+  assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.executor");
+  assert.equal(manifest.image.build_spec.command, "node executor/executor.mjs");
+  assert.ok(!manifest.mounts || manifest.mounts.length === 0);
+});
+
 test("secretsManifest scaffolds the SecretGroup that the controller requires", () => {
   const manifest = secretsManifest(fakeConfig());
   assert.equal(manifest.type, "secret-group");
   assert.deepEqual(Object.keys(manifest.secrets).sort(), [
     "HERMES-RUN-TOKEN-SECRET",
+    "HERMES-STT-API-KEY",
+    "HERMES-TTS-API-KEY",
     "SLACK-BOT-TOKEN",
     "SLACK-SIGNING-SECRET",
     "TFY-API-KEY"
@@ -447,6 +559,15 @@ test("readHermesConfig validates and normalizes the example agent config", async
         allowed_channels: ["C0123456789"],
         allowed_users: ["U0123456789"]
       },
+      agent_email: "devrel-assistant@agent.email",
+      discord: {
+        enabled: true,
+        allowed_users: ["123456789012345678"],
+        allowed_roles: ["234567890123456789"],
+        home_channel: "345678901234567890",
+        require_mention: false,
+        free_response_channels: ["456789012345678901"]
+      },
       skills: ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"],
       mcp_servers: ["https://mcp-gateway.example.com/servers/posthog"]
     };
@@ -461,14 +582,66 @@ test("readHermesConfig validates and normalizes the example agent config", async
     assert.deepEqual(parsed.skills, ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"]);
     assert.deepEqual(parsed.slack.allowedChannels, ["C0123456789"]);
     assert.deepEqual(parsed.slack.allowedUsers, ["U0123456789"]);
+    assert.equal(parsed.agentEmail, "devrel-assistant@agent.email");
+    assert.equal(parsed.discord.enabled, true);
+    assert.deepEqual(parsed.discord.allowedUsers, ["123456789012345678"]);
+    assert.deepEqual(parsed.discord.allowedRoles, ["234567890123456789"]);
+    assert.equal(parsed.discord.homeChannel, "345678901234567890");
+    assert.equal(parsed.discord.requireMention, false);
+    assert.deepEqual(parsed.discord.freeResponseChannels, ["456789012345678901"]);
     assert.equal(parsed.slackInboundArtifactCleanup.enabled, false);
     // sanity-check that the parsed config flows through the manifest builders.
     const controller = controllerManifest(parsed);
     assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:devrel-assistant-hermes-secrets:TFY-API-KEY");
+    assert.equal(controller.env.HERMES_AGENT_EMAIL, "devrel-assistant@agent.email");
+    assert.equal(controller.env.AGENTMAIL_API_KEY, "tfy-secret://tfy-eo:devrel-assistant-hermes-secrets:AGENTMAIL-API-KEY");
+    assert.equal(controller.env.DISCORD_ENABLED, "true");
+    assert.equal(controller.env.DISCORD_ALLOWED_USERS, "123456789012345678");
+    assert.equal(controller.env.DISCORD_REQUIRE_MENTION, "false");
     // Lingering reference to the removed shared HARNESS_INTERNAL_TOKEN must not exist.
     assert.equal(controller.env.HARNESS_INTERNAL_TOKEN, undefined);
     await readFile(yamlPath, "utf8"); // ensure the test file is still on disk
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readHermesConfig supports a small user-authored manifest with deploy-time defaults", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "tfy-hermes-min-config-test-"));
+  const previousWorkspace = process.env.TFY_WORKSPACE_FQN;
+  const previousHost = process.env.TFY_HOST;
+  const previousGateway = process.env.OPENAI_BASE_URL;
+  try {
+    process.env.TFY_WORKSPACE_FQN = "tfy-ea-dev-eo-az:sai-ws";
+    process.env.TFY_HOST = "https://tfy-eo.truefoundry.cloud";
+    delete process.env.OPENAI_BASE_URL;
+
+    const yamlPath = path.join(dir, "hermes.yaml");
+    await writeFile(yamlPath, YAML.stringify({
+      name: "minimal-agent",
+      description: "Small manifest",
+      instructions: "Be direct.",
+      skills: ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"],
+      mcp_servers: ["https://mcp-gateway.example.com/servers/posthog"]
+    }));
+
+    const parsed = await readHermesConfig(yamlPath);
+    assert.equal(parsed.name, "minimal-agent");
+    assert.equal(parsed.workspaceFqn, "tfy-ea-dev-eo-az:sai-ws");
+    assert.equal(parsed.host.url, "https://minimal-agent-sai-ws.ml.tfy-eo.truefoundry.cloud");
+    assert.equal(parsed.gatewayUrl, "https://gateway.truefoundry.ai");
+    assert.equal(parsed.model, "openai-main/gpt-5.5");
+    assert.equal(parsed.secrets, "minimal-agent-hermes-secrets");
+    assert.equal(parsed.executor.backend, "hermes-runtime");
+    assert.deepEqual(parsed.skills, ["agent-skill:tfy-eo/sai-mlrepo/humanizer:1"]);
+    assert.deepEqual(parsed.mcpServers, ["https://mcp-gateway.example.com/servers/posthog"]);
+  } finally {
+    if (previousWorkspace == null) delete process.env.TFY_WORKSPACE_FQN;
+    else process.env.TFY_WORKSPACE_FQN = previousWorkspace;
+    if (previousHost == null) delete process.env.TFY_HOST;
+    else process.env.TFY_HOST = previousHost;
+    if (previousGateway == null) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = previousGateway;
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -486,7 +659,7 @@ test("checked-in tfy-eo test agent example stays deployable", async () => {
   assert.equal(parsed.gatewayUrl, "https://gateway.truefoundry.ai");
   assert.equal(parsed.model, "openai-main/gpt-5.5");
   assert.equal(parsed.secrets, "hermes-test-agent-secrets");
-  assert.equal(parsed.executor.backend, "truefoundry-job");
+  assert.equal(parsed.executor.backend, "hermes-runtime");
   assert.equal(parsed.slackInboundArtifactRepo, "hermes-inbound-artifacts-prod");
   assert.deepEqual(parsed.slackInboundArtifactCleanup, {
     enabled: true,
@@ -500,12 +673,16 @@ test("checked-in tfy-eo test agent example stays deployable", async () => {
   const planned = planManifests(parsed, { includeSecrets: false });
   assert.deepEqual(planned.map((item) => item.filename), [
     "hermes-test-agent-volume.yaml",
+    "hermes-test-agent-runtime-volume.yaml",
+    "hermes-test-agent-runtime.yaml",
+    "hermes-test-agent-worker.yaml",
     "hermes-test-agent-controller.yaml",
-    "hermes-test-agent-executor.yaml",
     "hermes-test-agent-artifact-cleanup.yaml"
   ]);
 
   const controller = planned.find((item) => item.filename.endsWith("-controller.yaml")).manifest;
+  assert.equal(controller.env.HERMES_EXECUTOR_BACKEND, "hermes-runtime");
+  assert.equal(controller.env.HERMES_RUNTIME_URL, "http://hermes-test-agent-runtime:8789");
   assert.equal(controller.env.TFY_API_KEY, "tfy-secret://tfy-eo:hermes-test-agent-secrets:TFY-API-KEY");
   assert.equal(controller.env.HERMES_RUN_TOKEN_SECRET, "tfy-secret://tfy-eo:hermes-test-agent-secrets:HERMES-RUN-TOKEN-SECRET");
   assert.equal(controller.env.SLACK_BOT_TOKEN, "tfy-secret://tfy-eo:hermes-test-agent-secrets:SLACK-BOT-TOKEN");

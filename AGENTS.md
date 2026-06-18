@@ -3,10 +3,11 @@
 - Keep this repo focused on the reusable TrueFoundry Hermes deployment package.
 - Do not vendor the upstream Hermes Agent source tree here.
 - When answering capability questions, inspect both this wrapper's config/runtime and upstream `nousresearch/hermes-agent`; this repo is only the TrueFoundry deployment surface, not the full capability boundary.
+- Keep extensions TrueFoundry-native and department-agnostic: use TrueFoundry Services, Jobs, SecretGroups, volumes, logs, and manifests so any TrueFoundry team can create its own Hermes-backed assistant.
 - Secrets must remain TrueFoundry SecretGroup references in manifests.
 - `README.md` is the end-user setup runbook; `skills/deploy-hermes-slack-agent/` is the operator runbook for AI agents.
 - Treat `hermes.yaml` plus the CLI manifest builders (`bin/tfy-hermes-agent.mjs`) as the source of truth for generated Slack and TrueFoundry manifests. `init` prompts required fields, executor backend, then optional fields (Enter to skip); `deploy` auto-provisions the SecretGroup and `TFY-API-KEY` / `HERMES-RUN-TOKEN-SECRET` (and `DAYTONA-API-KEY` placeholder when `executor: truefoundry-service`).
-- Keep runtime naming consistent: the runtime is `controller` and `executor` only. Use those names for folders, entrypoint files, Dockerfiles, and generated manifest component names.
+- Keep runtime naming consistent: the default topology is `controller`, `runtime`, and `worker`; `executor` is reserved for legacy job/service backends. Use those names for folders, entrypoint files, Dockerfiles, and generated manifest component names.
 - Keep generated env vars minimal; prefer `hermes.yaml` fields over new env knobs, and do not add alias env names for the same setting. When you remove a code path that read an env var, also remove the env var from the relevant manifest builder.
 - Validate changed JavaScript with `npm run check` before committing. Smoke the CLI with `tfy-hermes-agent init` then `tfy-hermes-agent deploy <name> --skip-live-checks --emit-manifests /tmp/hermes-out` (requires `tfy login` or `TFY_HOST`/`TFY_API_KEY`).
 - TrueFoundry services do not support WebSockets; Slack support must use the HTTP Events API plus outbound Slack Web API calls, not Socket Mode or any WebSocket-dependent flow.
