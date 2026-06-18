@@ -185,7 +185,7 @@ Slack file messages are accepted through the HTTP Events API. The controller dow
 
 Image attachments are passed to Hermes as image inputs using their local workspace paths. Other file types are made available in the executor workspace and referenced in the prompt with `local_path`.
 
-When `slack_inbound_artifact_repo` is set, deploy also emits a weekly `<name>-artifact-cleanup` TrueFoundry job. By default it deletes only Hermes Slack run artifacts older than 7 days (`slack-run_…` names with Slack run metadata), leaving unrelated artifacts in the repo untouched.
+When `slack_inbound_artifact_repo` is set, deploy also emits a weekly `<name>-cleanup` TrueFoundry job. By default it deletes only Hermes Slack run artifacts older than 7 days (`slack-run_…` names with Slack run metadata), leaving unrelated artifacts in the repo untouched.
 
 ### 5. Verify
 

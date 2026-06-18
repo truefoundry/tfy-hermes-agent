@@ -1,4 +1,4 @@
-name: hermes-test-agent-artifact-cleanup
+name: hermes-test-agent-cleanup
 type: job
 workspace_fqn: tfy-ea-dev-eo-az:sai-ws
 trigger:

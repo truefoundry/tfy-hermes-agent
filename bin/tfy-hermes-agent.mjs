@@ -444,8 +444,16 @@ function resourceNames(config) {
     volume: `${config.name}-data`,
     controller: `${config.name}-controller`,
     executor: `${config.name}-executor`,
-    artifactCleanup: `${config.name}-artifact-cleanup`
+    artifactCleanup: resourceNameWithSuffix(config.name, "-cleanup")
   };
+}
+
+function resourceNameWithSuffix(name, suffix, maxLength = 30) {
+  const full = `${name}${suffix}`;
+  if (full.length <= maxLength) return full;
+  const baseLength = Math.max(1, maxLength - suffix.length);
+  const base = name.slice(0, baseLength).replace(/-+$/g, "");
+  return `${base}${suffix}`;
 }
 
 function secretRef(config, key) {

@@ -297,7 +297,7 @@ test("artifactCleanupManifest builds a weekly cleanup job for Slack inbound arti
     }
   }));
   assert.equal(manifest.type, "job");
-  assert.equal(manifest.name, "devrel-assistant-artifact-cleanup");
+  assert.equal(manifest.name, "devrel-assistant-cleanup");
   assert.deepEqual(manifest.trigger, { type: "cron", schedule: "0 2 * * 0" });
   assert.equal(manifest.concurrency_limit, 1);
   assert.equal(manifest.image.build_spec.dockerfile_path, "Dockerfile.controller");
