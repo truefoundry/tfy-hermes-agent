@@ -6,6 +6,8 @@ const host = String(process.env.HERMES_TEST_AGENT_HOST || process.argv[2] || "")
   .replace(/\/+$/, "");
 const token = process.env.HERMES_TEST_AGENT_API_KEY || process.env.TFY_API_KEY || "";
 const timeoutMs = Number(process.env.HERMES_LIVE_SMOKE_TIMEOUT_MS || 600_000);
+const readinessTimeoutMs = Number(process.env.HERMES_LIVE_SMOKE_READINESS_TIMEOUT_MS || 300_000);
+const readinessIntervalMs = Number(process.env.HERMES_LIVE_SMOKE_READINESS_INTERVAL_MS || 10_000);
 const expectSlack = process.env.HERMES_LIVE_SMOKE_EXPECT_SLACK !== "0";
 const sessionOneFollowups = Number(process.env.HERMES_LIVE_SMOKE_SESSION_ONE_FOLLOWUPS || 3);
 const sessionTwoFollowups = Number(process.env.HERMES_LIVE_SMOKE_SESSION_TWO_FOLLOWUPS || 2);
@@ -19,6 +21,10 @@ function log(step, detail = "") {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function readText(res) {
@@ -54,6 +60,28 @@ async function requestJson(pathname, options) {
   } catch (error) {
     throw new Error(`${pathname} did not return JSON: ${text.slice(0, 500)}`);
   }
+}
+
+async function waitForJson(pathname, isReady, label) {
+  const startedAt = Date.now();
+  let lastError = null;
+
+  while (Date.now() - startedAt < readinessTimeoutMs) {
+    try {
+      const value = await requestJson(pathname, { timeout: Math.min(timeoutMs, readinessIntervalMs) });
+      if (isReady(value)) return value;
+      lastError = new Error(`${pathname} returned but ${label} is not ready`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    log("waiting for readiness", `${label}: ${message}`);
+    await sleep(readinessIntervalMs);
+  }
+
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${label} was not ready after ${readinessTimeoutMs}ms: ${message}`);
 }
 
 function outputText(response) {
@@ -102,7 +130,7 @@ function parseSse(text) {
 
 async function main() {
   log("health", host);
-  const health = await requestJson("/api/health");
+  const health = await waitForJson("/api/health", (value) => value?.ok === true, "controller health");
   assert(health.ok === true, "/api/health did not return ok=true");
 
   log("Slack health");
