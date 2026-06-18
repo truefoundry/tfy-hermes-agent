@@ -6,6 +6,8 @@ This file is read by Claude Code when it opens this repo. Keep it short.
 
 A thin TrueFoundry deployment wrapper around the OSS [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes-agent` on PyPI). Three runtime pieces + a CLI:
 
+Capability questions must check both surfaces: this wrapper's config/runtime and upstream `nousresearch/hermes-agent`. This repo is the deployment surface only; do not infer Hermes Agent's full capability boundary from wrapper code alone.
+
 - `controller/controller.mjs` — long-running Node service. Handles Slack webhooks, OpenAI-compatible `/v1/*`, and per-run executor callbacks. Owns the only persistent state (SQLite on a controller-only PVC).
 - `executor/executor.mjs` — turn runner for `truefoundry-job` (TF Job entrypoint). `executor/server.mjs` — internal HTTP service for `truefoundry-service`. Both decode a signed payload, shuttle the session DB, run Hermes, post results back.
 - `bin/tfy-hermes-agent.mjs` — CLI. `init` (interactive wizard: required fields, executor backend, optional fields; `--api-only` for no Slack) and `deploy` (auto-provisions SecretGroup secrets, validate + apply manifests).

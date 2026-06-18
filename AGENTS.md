@@ -2,6 +2,7 @@
 
 - Keep this repo focused on the reusable TrueFoundry Hermes deployment package.
 - Do not vendor the upstream Hermes Agent source tree here.
+- When answering capability questions, inspect both this wrapper's config/runtime and upstream `nousresearch/hermes-agent`; this repo is only the TrueFoundry deployment surface, not the full capability boundary.
 - Secrets must remain TrueFoundry SecretGroup references in manifests.
 - `README.md` is the end-user setup runbook; `skills/deploy-hermes-slack-agent/` is the operator runbook for AI agents.
 - Treat `hermes.yaml` plus the CLI manifest builders (`bin/tfy-hermes-agent.mjs`) as the source of truth for generated Slack and TrueFoundry manifests. `init` prompts required fields, executor backend, then optional fields (Enter to skip); `deploy` auto-provisions the SecretGroup and `TFY-API-KEY` / `HERMES-RUN-TOKEN-SECRET` (and `DAYTONA-API-KEY` placeholder when `executor: truefoundry-service`).
